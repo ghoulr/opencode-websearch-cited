@@ -53,7 +53,7 @@ type GeminiWebSearchOptions = {
   abortSignal: AbortSignal;
 };
 
-export const GeminiSearchPlugin: Plugin = () => {
+export const WebsearchGeminiPlugin: Plugin = () => {
   let googleApiKeyFromAuth: string | undefined;
 
   return Promise.resolve({
@@ -76,7 +76,7 @@ export const GeminiSearchPlugin: Plugin = () => {
       ],
     },
     tool: {
-      geminisearch: tool({
+      websearch_gemini: tool({
         description: GEMINI_TOOL_DESCRIPTION,
         args: {
           query: tool.schema
@@ -131,7 +131,7 @@ export const GeminiSearchPlugin: Plugin = () => {
   });
 };
 
-export default GeminiSearchPlugin;
+export default WebsearchGeminiPlugin;
 
 async function runGeminiWebSearch(
   options: GeminiWebSearchOptions

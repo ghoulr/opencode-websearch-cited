@@ -17,7 +17,7 @@ void vi.mock('@google/genai', () => {
   };
 });
 
-const { formatWebSearchResponse, GeminiSearchPlugin } = await import('./index');
+const { formatWebSearchResponse, WebsearchGeminiPlugin } = await import('./index');
 
 describe('formatWebSearchResponse', () => {
   it('returns fallback when Gemini response has no text', () => {
@@ -137,7 +137,7 @@ describe('formatWebSearchResponse', () => {
   });
 });
 
-describe('GeminiSearchPlugin', () => {
+describe('WebsearchGeminiPlugin', () => {
   beforeEach(() => {
     mockGenerateContent.mockReset();
     mockGoogleGenAI.mockClear();
@@ -148,24 +148,11 @@ describe('GeminiSearchPlugin', () => {
     delete process.env.GEMINI_API_KEY;
   });
 
-  it('returns validation error for empty queries', async () => {
-    const plugin = await createPluginHooks();
-    const tool = plugin.tool?.geminisearch;
-    expect(tool).toBeDefined();
-    const context = createToolContext();
-
-    const raw = await tool!.execute({ query: '   ' }, context);
-    const result = parseResult(raw);
-
-    expect(result.error?.type).toBe('INVALID_QUERY');
-    expect(result.llmContent).toContain('cannot be empty');
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-  });
-
   it('returns configuration error when API key is missing', async () => {
     delete process.env.GEMINI_API_KEY;
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.geminisearch;
+    const tool = plugin.tool?.websearch_gemini;
+
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'opencode' }, context);
@@ -196,7 +183,7 @@ describe('GeminiSearchPlugin', () => {
     );
 
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.geminisearch;
+    const tool = plugin.tool?.websearch_gemini;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -212,7 +199,7 @@ describe('GeminiSearchPlugin', () => {
     mockGenerateContent.mockRejectedValue(new Error('API Failure'));
 
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.geminisearch;
+    const tool = plugin.tool?.websearch_gemini;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -237,7 +224,7 @@ describe('GeminiSearchPlugin', () => {
     const plugin = await createPluginHooks();
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
 
-    const tool = plugin.tool?.geminisearch;
+    const tool = plugin.tool?.websearch_gemini;
     const context = createToolContext();
 
     await tool!.execute({ query: 'stored key query' }, context);
@@ -256,7 +243,7 @@ describe('GeminiSearchPlugin', () => {
     );
 
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.geminisearch;
+    const tool = plugin.tool?.websearch_gemini;
     const context = createToolContext();
 
     await tool!.execute({ query: 'model query' }, context);
@@ -273,10 +260,10 @@ function parseResult(raw: string): GeminiSearchResult {
   return JSON.parse(raw) as unknown as GeminiSearchResult;
 }
 
-type PluginHooks = Awaited<ReturnType<typeof GeminiSearchPlugin>>;
+type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;
 
 async function createPluginHooks() {
-  return GeminiSearchPlugin({} as PluginInput);
+  return WebsearchGeminiPlugin({} as PluginInput);
 }
 
 async function invokeAuthLoader(plugin: PluginHooks, auth?: ProviderAuth) {

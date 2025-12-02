@@ -1,5 +1,5 @@
 {
-  "name": "opencode-gemini-search",
+  "name": "opencode-websearch-gemini",
   "version": "0.9.0",
   "module": "index.ts",
   "type": "module",

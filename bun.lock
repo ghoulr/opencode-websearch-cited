@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode-gemini-search-plugin",
+      "name": "opencode-websearch-gemini-plugin",
       "dependencies": {
         "@google/genai": "^1.30.0",
         "@opencode-ai/plugin": "^1.0.125",

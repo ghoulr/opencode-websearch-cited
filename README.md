@@ -1,4 +1,4 @@
-# opencode-gemini-search
+# opencode-websearch-gemini
 
 Gemini Web Search plugin for [OpenCode](https://opencode.ai), inspired by [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
@@ -8,7 +8,7 @@ This plugin exposes a Gemini-backed web search capability as an OpenCode custom 
 
 ## Features
 
-- `geminisearch` tool backed by Google Gemini web search.
+- `websearch_gemini` tool backed by Google Gemini web search.
 - Uses the official `@google/genai` SDK under the hood.
 - Always calls the `gemini-2.5-flash` model with the `googleSearch` tool enabled.
 - Outputs exact result with format of Gemini CLI.
@@ -19,7 +19,7 @@ For more details, see the design spec in `docs/spec.md`.
 
 ## How it works
 
-- The plugin registers a custom tool named `geminisearch` with OpenCode.
+- The plugin registers a custom tool named `websearch_gemini` with OpenCode.
 - When an agent calls this tool with a `query`, the plugin:
   - Resolves a Gemini API key by first from `opencode auth login` and falling back to `GEMINI_API_KEY` env.
   - Uses `@google/genai` to call a Gemini model configured with the `googleSearch` tool.
@@ -32,7 +32,7 @@ This mirrors the behavior of the Gemini CLI `WebSearchTool`, but packaged as a r
 From a user perspective:
 
 - You ask your OpenCode agent a question that needs web context.
-- The agent decides to call `geminisearch` with your natural-language query.
+- The agent decides to call `websearch_gemini` with your natural-language query.
 - Gemini performs a web search and returns an answer with inline citations and a numbered "Sources" list at the bottom.
 
 ---
@@ -44,11 +44,11 @@ After installing the plugin from npm, enable it in your `opencode.jsonc`:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-gemini-search"],
+  "plugin": ["opencode-websearch-gemini"],
 }
 ```
 
-As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `geminisearch` when it needs web search.
+As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `websearch_gemini` when it needs web search.
 
 ---
 
@@ -63,7 +63,7 @@ This plugin needs a Gemini API key and resolves it in this order:
    export GEMINI_API_KEY="your-gemini-api-key"
    ```
 
-If neither source is available, `geminisearch` returns a `MISSING_GEMINI_API_KEY` error instead of calling the Gemini API.
+If neither source is available, `websearch_gemini` returns a `MISSING_GEMINI_API_KEY` error instead of calling the Gemini API.
 
 ---
 
@@ -84,7 +84,7 @@ When testing the plugin against a globally installed `opencode` CLI during devel
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///path/to/opencode-gemini-search/index.ts"],
+  "plugin": ["file:///path/to/opencode-websearch-gemini/index.ts"],
 }
 ```
 
