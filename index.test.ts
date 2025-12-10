@@ -1,33 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'bun:test';
 import type { PluginInput } from '@opencode-ai/plugin';
 import type { Auth as ProviderAuth, Config, Provider } from '@opencode-ai/sdk';
-import type { GenerateContentResponse } from '@google/genai';
 import type { WebSearchResult } from './index';
-
-const mockGenerateContent = vi.fn();
-const mockGoogleGenAI = vi.fn(() => ({
-  models: {
-    generateContent: mockGenerateContent,
-  },
-}));
+import type { GeminiGenerateContentResponse } from './src/types.ts';
 
 const WEBSEARCH_CONFIG: Config = {
   provider: {
     google: {
       options: {
-        websearch: {
+        websearch_grounded: {
           model: 'gemini-2.5-flash',
         },
       },
     },
   },
 };
-
-void vi.mock('@google/genai', () => {
-  return {
-    GoogleGenAI: mockGoogleGenAI,
-  };
-});
 
 const { formatWebSearchResponse, WebsearchGeminiPlugin } = await import('./index');
 
@@ -151,11 +138,12 @@ describe('formatWebSearchResponse', () => {
 
 describe('WebsearchGeminiPlugin', () => {
   let warnSpy: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
+  let fetchMock: ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>>;
 
   beforeEach(() => {
-    mockGenerateContent.mockReset();
-    mockGoogleGenAI.mockClear();
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock = vi.spyOn(globalThis, 'fetch');
+    fetchMock.mockRejectedValue(new Error('fetch mock not configured'));
   });
 
   afterEach(() => {
@@ -165,7 +153,7 @@ describe('WebsearchGeminiPlugin', () => {
 
   it('returns configuration error when API key is missing', async () => {
     const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
 
     const context = createToolContext();
 
@@ -174,12 +162,12 @@ describe('WebsearchGeminiPlugin', () => {
 
     expect(result.error?.type).toBe('INVALID_AUTH');
     expect(result.llmContent).toContain('missing or invalid auth');
-    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns invalid model when websearch model is not configured', async () => {
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'opencode' }, context);
@@ -187,7 +175,7 @@ describe('WebsearchGeminiPlugin', () => {
 
     expect(result.error?.type).toBe('INVALID_MODEL');
     expect(result.llmContent).toContain('missing or invalid model');
-    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns invalid model when configured model is blank', async () => {
@@ -195,12 +183,12 @@ describe('WebsearchGeminiPlugin', () => {
       provider: {
         google: {
           options: {
-            websearch: { model: '' },
+            websearch_grounded: { model: '' },
           },
         },
       },
     } as Config);
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'opencode' }, context);
@@ -208,12 +196,12 @@ describe('WebsearchGeminiPlugin', () => {
 
     expect(result.error?.type).toBe('INVALID_MODEL');
     expect(result.llmContent).toContain('missing or invalid model');
-    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects extra arguments', async () => {
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     const raw = await tool!.execute(
@@ -226,31 +214,35 @@ describe('WebsearchGeminiPlugin', () => {
     expect(result.llmContent).toContain(
       "Unknown argument(s): format, only 'query' supported"
     );
-    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns successful search results', async () => {
-    mockGenerateContent.mockResolvedValue(
-      createResponse({
-        content: {
-          role: 'model',
-          parts: [{ text: 'Search body' }],
-        },
-        groundingMetadata: {
-          groundingChunks: [{ web: { title: 'Example', uri: 'https://example.com' } }],
-          groundingSupports: [
-            {
-              segment: { startIndex: 0, endIndex: 6 },
-              groundingChunkIndices: [0],
-            },
-          ],
-        },
-      })
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse(
+        createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'Search body' }],
+          },
+          groundingMetadata: {
+            groundingChunks: [
+              { web: { title: 'Example', uri: 'https://example.com' } },
+            ],
+            groundingSupports: [
+              {
+                segment: { startIndex: 0, endIndex: 6 },
+                groundingChunkIndices: [0],
+              },
+            ],
+          },
+        })
+      )
     );
 
     const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -260,15 +252,16 @@ describe('WebsearchGeminiPlugin', () => {
     expect(result.llmContent).toContain('Web search results for "sample"');
     expect(result.sources).toBeDefined();
     expect(result.sources?.length).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns Gemini failure details', async () => {
     const failure = new Error('API Failure');
-    mockGenerateContent.mockRejectedValue(failure);
+    fetchMock.mockRejectedValueOnce(failure);
 
     const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -281,64 +274,69 @@ describe('WebsearchGeminiPlugin', () => {
   });
 
   it('uses the API key from provider auth', async () => {
-    mockGenerateContent.mockResolvedValue(
-      createResponse({
-        content: {
-          role: 'model',
-          parts: [{ text: 'Stored key response' }],
-        },
-      })
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse(
+        createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'Stored key response' }],
+          },
+        })
+      )
     );
 
     const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
 
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     await tool!.execute({ query: 'stored key query' }, context);
 
-    expect(mockGoogleGenAI).toHaveBeenCalledWith({ apiKey: 'stored-key' });
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers['x-goog-api-key']).toBe('stored-key');
   });
 
   it('uses the configured model', async () => {
-    mockGenerateContent.mockResolvedValue(
-      createResponse({
-        content: {
-          role: 'model',
-          parts: [{ text: 'Default model response' }],
-        },
-      })
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse(
+        createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'Default model response' }],
+          },
+        })
+      )
     );
 
     const plugin = await createPluginHooks({
       provider: {
         google: {
           options: {
-            websearch: { model: 'gemini-custom-model' },
+            websearch_grounded: { model: 'gemini-custom-model' },
           },
         },
       },
     } as Config);
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
-    const tool = plugin.tool?.websearch;
+    const tool = plugin.tool?.websearch_grounded;
     const context = createToolContext();
 
     await tool!.execute({ query: 'model query' }, context);
 
-    expect(mockGenerateContent).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gemini-custom-model' })
-    );
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof url === 'string' ? url : '').toContain('gemini-custom-model');
   });
 });
 
-type CandidateInput = NonNullable<GenerateContentResponse['candidates']>[number];
+type CandidateInput = NonNullable<GeminiGenerateContentResponse['candidates']>[number];
+
+type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;
 
 function parseResult(raw: string): WebSearchResult {
   return JSON.parse(raw) as unknown as WebSearchResult;
 }
-
-type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;
 
 async function createPluginHooks(config?: Config) {
   const plugin = await WebsearchGeminiPlugin({} as PluginInput);
@@ -355,10 +353,23 @@ async function invokeAuthLoader(plugin: PluginHooks, auth?: ProviderAuth) {
   await plugin.auth.loader(() => Promise.resolve(auth as ProviderAuth), {} as Provider);
 }
 
-function createResponse(candidate: CandidateInput): GenerateContentResponse {
+function createResponse(candidate: CandidateInput): GeminiGenerateContentResponse {
   return {
     candidates: [candidate],
-  } as GenerateContentResponse;
+  };
+}
+
+function createFetchResponse(
+  body: GeminiGenerateContentResponse,
+  init?: Partial<Pick<Response, 'ok' | 'status' | 'statusText'>>
+): Response {
+  return {
+    ok: init?.ok ?? true,
+    status: init?.status ?? 200,
+    statusText: init?.statusText ?? 'OK',
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
+  } as Response;
 }
 
 function createToolContext() {

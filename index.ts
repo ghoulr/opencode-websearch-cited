@@ -12,8 +12,8 @@ import { WEBSEARCH_ERROR, WEBSEARCH_ERROR_MESSAGES } from '@/types';
 
 const GEMINI_PROVIDER_ID = 'google';
 
-const GEMINI_TOOL_DESCRIPTION =
-  'Performs a web search using Google Search (via the Gemini API) and returns the results. This tool is useful for finding information on the internet based on a query.';
+const GROUNDED_SEARCH_TOOL_DESCRIPTION =
+  'Performs a web search with LLM-grounded results and citations. This tool is useful for finding information on the internet with reliable sources and inline references.';
 
 const WEBSEARCH_ARGS = {
   query: tool.schema.string().describe('The natural-language web search query.'),
@@ -33,22 +33,30 @@ export const WebsearchGeminiPlugin: Plugin = () => {
     const providerConfig = config.provider?.[GEMINI_PROVIDER_ID];
     const providerOptions = providerConfig?.options;
     if (
-      providerOptions &&
-      typeof providerOptions === 'object' &&
-      'websearch' in providerOptions
+      !providerOptions ||
+      typeof providerOptions !== 'object' ||
+      Array.isArray(providerOptions)
     ) {
-      const websearch = (providerOptions as { websearch?: unknown }).websearch;
-      if (websearch && typeof websearch === 'object' && !Array.isArray(websearch)) {
-        const candidate = (websearch as { model?: unknown }).model;
-        if (typeof candidate === 'string') {
-          const trimmed = candidate.trim();
-          if (trimmed !== '') {
-            return trimmed;
-          }
-        }
-      }
+      return undefined;
     }
-    return undefined;
+
+    const groundedBlock = (providerOptions as Record<string, unknown>)[
+      'websearch_grounded'
+    ];
+    if (
+      !groundedBlock ||
+      typeof groundedBlock !== 'object' ||
+      Array.isArray(groundedBlock)
+    ) {
+      return undefined;
+    }
+
+    const candidate = (groundedBlock as { model?: unknown }).model;
+    if (typeof candidate !== 'string') {
+      return undefined;
+    }
+    const trimmed = candidate.trim();
+    return trimmed === '' ? undefined : trimmed;
   }
 
   return Promise.resolve({
@@ -75,8 +83,8 @@ export const WebsearchGeminiPlugin: Plugin = () => {
       return Promise.resolve();
     },
     tool: {
-      websearch: tool({
-        description: GEMINI_TOOL_DESCRIPTION,
+      websearch_grounded: tool({
+        description: GROUNDED_SEARCH_TOOL_DESCRIPTION,
         args: WEBSEARCH_ARGS,
         async execute(args, context) {
           const argKeys = Object.keys(args ?? {});
@@ -108,7 +116,7 @@ export const WebsearchGeminiPlugin: Plugin = () => {
               buildErrorResult(
                 WEBSEARCH_ERROR_MESSAGES.invalidModel,
                 WEBSEARCH_ERROR.invalidModel,
-                'Set provider.google.options.websearch.model to a supported Gemini model.'
+                'Set provider.google.options.websearch_grounded.model (or legacy provider.google.options.websearch.model) to a supported Gemini model.'
               )
             );
           }

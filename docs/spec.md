@@ -1,26 +1,23 @@
-# Multi-provider Web Search Spec
+# Multi-provider LLM-Grounded Search Spec
 
-This document defines a common interface and provider-specific behavior for web search tools backed by different providers:
+This document defines a common interface and provider-specific behavior for LLM-grounded web search tools backed by different providers:
 
-- Google Gemini (current `websearch` implementation)
-- OpenAI via OAuth (OpenAI Codex OAuth plugin)
+- Google Gemini
+- OpenAI
 - OpenRouter Responses API with web search plugin
 
-The goal is to let OpenCode agents call a single-purpose tool per provider (or a future unified tool) and always receive a consistent, citation-friendly result structure.
+Gemini and OpenAI SHOULD support both API key and OAuth (via provider plugins) for LLM-grounded search.
+
+The goal is to let OpenCode agents call a single-purpose tool and always receive a consistent, citation-friendly result structure with reliable inline references.
 
 ---
 
 ## Goals
 
 - Provide a **unified result shape** for all providers.
-- Keep the **existing `websearch` behavior fully compatible**.
-- Allow adding **OpenAI (OAuth)** and **OpenRouter** backed web search without changing callers.
+- Keep the **existing LLM-grounded search behavior fully compatible**.
+- Allow adding **OpenAI** and **OpenRouter** backed LLM-grounded search without changing callers.
 - Make it explicit **which provider can return structured citations** and how they are derived.
-
-Non-goals for this spec:
-
-- Implement every provider in this repository right away.
-- Define complex routing or automatic provider selection logic.
 
 ---
 
@@ -28,7 +25,7 @@ Non-goals for this spec:
 
 ### Tool shape
 
-Each provider-specific tool follows this logical contract (names may differ per provider):
+Each provider-specific tool follows this logical contract:
 
 - **Input** (args object):
   - `query: string` (required, non-empty after trimming)
@@ -72,8 +69,8 @@ Example error shape:
 
 ```ts
 {
-  llmContent: "Error: websearch_* only accepts a single 'query' field.\n\nDetails: Unknown argument(s): foo, only 'query' supported.",
-  returnDisplay: "websearch_* only accepts a single 'query' field.",
+  llmContent: "Error: websearch_grounded only accepts a single 'query' field.\n\nDetails: Unknown argument(s): foo, only 'query' supported.",
+  returnDisplay: "websearch_grounded only accepts a single 'query' field.",
   error: {
     message: "Unknown argument(s): foo, only 'query' supported.",
     type: "INVALID_TOOL_ARGUMENTS",
@@ -88,10 +85,10 @@ Example error shape:
 - Each provider section below specifies:
   - Provider id (for OpenCode, when applicable)
   - How credentials are resolved
-  - How `provider.<id>.options.websearch` is interpreted
+  - How `provider.<id>.options.websearch_grounded` is interpreted
   - Which env vars act as fallbacks
 
-#### Provider options (`provider.*.options.websearch`)
+#### Provider options (`provider.*.options.websearch_grounded`)
 
 - Opencode's main config file may define provider-specific websearch defaults, for example:
 
@@ -100,6 +97,10 @@ Example error shape:
     "provider": {
       "google": {
         "options": {
+          "websearch_grounded": {
+            "model": "gemini-2.5-flash",
+          },
+          // Legacy key for backward compatibility
           "websearch": {
             "model": "gemini-2.5-flash",
           },
@@ -107,7 +108,7 @@ Example error shape:
       },
       "openai": {
         "options": {
-          "websearch": {
+          "websearch_grounded": {
             "model": "openai/gpt-5.1-low",
           },
         },
@@ -116,11 +117,9 @@ Example error shape:
   }
   ```
 
-- Each provider section documents which keys are read from this `websearch` block.
+- Each provider section documents which keys are read from this `websearch_grounded` block.
 - Unless otherwise stated, precedence is:
-  - Tool arguments (none today) >
-  - `provider.<id>.options.websearch` >
-  - Internal hard-coded defaults.
+  - `provider.<id>.options.websearch_grounded` > internal defaults.
 
 ---
 
@@ -128,15 +127,14 @@ Example error shape:
 
 ### Tool
 
-- Name: `websearch`
-- Description: performs web search via Google Gemini with the `googleSearch` tool.
+- Name: `websearch_grounded`
+- Description: performs LLM-grounded web search via Google Gemini with the `googleSearch` tool, providing citations and reliable sources.
 - Provider id: `google`
 
 ### Auth resolution
 
 1. Try OpenCode provider auth for `provider: "google"` (type `api` key).
-2. Fallback to `process.env.GEMINI_API_KEY`.
-3. If neither is available, return `MISSING_GEMINI_API_KEY` error.
+2. If neither provider auth nor `process.env.GEMINI_API_KEY` is available, return `MISSING_GEMINI_API_KEY` error.
 
 Error shape:
 
@@ -150,7 +148,7 @@ error.type === 'MISSING_GEMINI_API_KEY';
 - Endpoint: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
 - Model:
   - Default is `gemini-2.5-flash`.
-  - If `provider.google.options.websearch.model` is a non-empty string, that value overrides the default.
+  - If `provider.google.options.websearch_grounded.model` is a non-empty string, that value overrides the default.
 - Request headers (API-key based flow):
   - `x-goog-api-key: <GEMINI_API_KEY or provider api key>`
   - `Content-Type: application/json`
@@ -215,9 +213,12 @@ error.type === 'MISSING_GEMINI_API_KEY';
 
 ---
 
-## OpenAI Provider (OAuth via Codex plugin)
+## OpenAI Provider
 
-This provider uses the existing `opencode-openai-codex-auth` plugin to handle all OpenAI OAuth flows and request transformation.
+This provider supports two authentication modes:
+
+- OAuth via the existing `opencode-openai-codex-auth` plugin, which handles all OpenAI OAuth flows and request transformation.
+- Direct OpenAI Responses API access via an API key (for example, `OPENAI_API_KEY`).
 
 ### Role of the OAuth plugin
 
@@ -228,52 +229,50 @@ This provider uses the existing `opencode-openai-codex-auth` plugin to handle al
   - Decode JWT, extract ChatGPT account id.
   - Integrate with Opencode's OpenAI provider by overriding the HTTP layer (`baseURL` and `fetch`) so that server-side LLM calls are sent to the ChatGPT Codex backend instead of the public Platform API.
 
-The websearch plugin **does not** implement the OAuth dance itself. It reuses the tokens stored by this plugin (via `getAuth()`), but performs its own HTTP requests directly to the Codex backend rather than going through `@opencode-ai/sdk` or the Opencode client.
+The websearch plugin **does not** implement the OAuth dance itself. It reuses the tokens stored by this plugin (via `getAuth()`), but performs its own HTTP requests directly to the OpenAI backend rather than going through `@opencode-ai/sdk` or the Opencode client. When no OAuth session is present, the implementation can instead call the OpenAI Responses API directly with an API key.
 
 ### Tool
 
-- Proposed name: `websearch_openai_oauth`.
+- Name: `websearch_grounded`.
 - Provider id: `openai`.
-- Description: performs a web-backed search using an OpenAI / ChatGPT model accessible via OAuth.
+- Description: performs LLM-grounded web search via OpenAI (either ChatGPT via Codex OAuth or the public Responses API), providing citations and reliable sources when available.
 
 ### Auth resolution
 
-- No API key in this plugin.
-- Requires the user to:
-  - Install and enable `opencode-openai-codex-auth`.
-  - Authenticate with `provider: "openai"` using the OAuth method.
-- The websearch plugin reads the stored OAuth record for `provider: "openai"` via `getAuth()` and uses the current `access` token as a bearer token for its HTTP requests.
+- Primary: use the existing OpenCode OpenAI provider configuration.
+- If an OAuth session is present via `opencode-openai-codex-auth`, read the stored OAuth record for `provider: "openai"` via `getAuth()` and use the current `access` token as a bearer token for HTTP requests.
+- Otherwise, fall back to an API key-based flow (for example, `process.env.OPENAI_API_KEY`) when available.
 
-### Configuration (`provider.openai.options.websearch`)
+### Configuration (`provider.openai.options.websearch_grounded`)
 
-- Opencode config may define OpenAI websearch defaults under `provider.openai.options.websearch`.
+- Opencode config may define OpenAI websearch defaults under `provider.openai.options.websearch_grounded`.
 - Supported keys (initially):
-  - `model?: string` – Codex model identifier to use for websearch when defined.
-- If this block is missing or invalid, the implementation falls back to an internal default Codex model.
+  - `model?: string` – model identifier to use for websearch when defined.
+- If this block is missing or invalid, the implementation falls back to an internal default model.
 
-If no valid OpenAI OAuth session is present, the tool should:
+If no valid OpenAI OAuth session or API key is present, the tool should:
 
 - Let the OpenAI provider / SDK surface its own error where possible, or
 - Return an explicit error such as:
 
   ```ts
-  error.type === 'MISSING_OPENAI_OAUTH_SESSION';
+  error.type === 'MISSING_OPENAI_AUTH';
   ```
 
 (Exact error naming can be finalized during implementation.)
 
 ### Underlying API call
 
-- Transport: plain HTTP to the same ChatGPT Codex backend that `opencode-openai-codex-auth` targets.
-- Auth header: `Authorization: Bearer <accessTokenFromAuth>`.
+- Transport: plain HTTP to either the ChatGPT Codex backend (when using OAuth) or the public OpenAI Responses API (when using an API key).
+- Auth header: either `Authorization: Bearer <accessTokenFromAuth>` for OAuth flows or `Authorization: Bearer <OPENAI_API_KEY>` for API key flows.
 - Content-Type: `application/json`.
-- Request body: follows the same logical shape as an OpenAI Responses API call, with the chosen Codex model and the user query as input. The exact endpoint path and any additional headers are shared with the Codex OAuth plugin's request helpers.
+- Request body: follows the same logical shape as an OpenAI Responses API call, with the chosen model and the user query as input. The exact endpoint path and any additional headers are shared with the Codex OAuth plugin's request helpers or the OpenAI Platform documentation.
 - The websearch plugin does **not** use `@opencode-ai/sdk` or `client.responses.create` for this call; it constructs JSON and issues an HTTP `fetch` directly.
 
 Notes:
 
-- The Codex backend may already have browsing / web access features baked in, but does **not** expose a structured `groundingMetadata` equivalent.
-- For this reason, the initial `websearch_openai_oauth` design treats OpenAI responses as **non-grounded text**.
+- The OpenAI backend may already have browsing / web access features baked in, but does **not** expose a structured `groundingMetadata` equivalent.
+- For this reason, the initial OpenAI-backed design in this spec treats OpenAI responses as **non-grounded text**.
 
 ### Response mapping
 
@@ -284,7 +283,7 @@ Initial mapping:
 
 ```ts
 {
-  llmContent: `Web search results for "${query}":\n\n${answerText}`,
+  llmContent: `LLM-grounded search results for "${query}":\n\n${answerText}`,
   returnDisplay: `Search results for "${query}" returned.`,
   // sources is omitted by default for OAuth OpenAI
 }
@@ -308,9 +307,9 @@ OpenRouter provides a Responses API that is broadly compatible with OpenAI's Res
 
 ### Tool
 
-- Proposed name: `websearch_openrouter`.
+- Proposed name: `websearch_grounded`.
 - No fixed provider id in OpenCode yet; the plugin will handle HTTP directly.
-- Description: performs web search via OpenRouter Responses API using the `web` plugin.
+- Description: performs LLM-grounded web search via OpenRouter Responses API using the `web` plugin.
 
 ### Auth resolution
 
@@ -392,7 +391,7 @@ Two options for integrating them into the final answer text:
 
 ```ts
 {
-  llmContent: `Web search results for "${query}":\n\n${modifiedTextWithMarkersAndSources}`,
+  llmContent: `LLM-grounded search results for "${query}":\n\n${modifiedTextWithMarkersAndSources}`,
   returnDisplay: `Search results for "${query}" returned.`,
   sources: derivedSourcesArray,
 }
@@ -428,7 +427,7 @@ Two options for integrating them into the final answer text:
 
 All providers conform to the same `WebSearchResult` shape:
 
-- `llmContent`: human-readable markdown answer, prefixed with `Web search results for "{query}":`.
+- `llmContent`: human-readable markdown answer, typically prefixed with `Web search results for "{query}":` or `LLM-grounded search results for "{query}":` depending on provider and implementation.
 - `returnDisplay`: short status message.
 - `sources`: optional, populated when the provider exposes structured citation information (Gemini, OpenRouter).
 - `error`: optional error info with at least `message` and `type`.
@@ -437,6 +436,6 @@ All providers conform to the same `WebSearchResult` shape:
 
 ## Future Extensions
 
-- A unified `websearch` tool that accepts a `provider` argument (e.g. `"gemini" | "openai_oauth" | "openrouter"`) and internally dispatches to the appropriate implementation.
-- Structured output contracts for OpenAI OAuth-backed models to synthesize a `sources` array.
+- A unified `websearch_grounded` tool that accepts a `provider` argument (e.g. `"gemini" | "openai" | "openrouter"`) and internally dispatches to the appropriate implementation.
+- Structured output contracts for OpenAI-backed models to synthesize a `sources` array when citations are not natively available.
 - Additional providers (e.g. Anthropic, other search APIs) that map into the same `WebSearchResult` contract.

@@ -1,6 +1,6 @@
-import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 import type { Auth as ProviderAuth } from '@opencode-ai/sdk';
 import {
+  type GeminiGenerateContentResponse,
   type GeminiMetadata,
   type WebSearchErrorType,
   type WebSearchResult,
@@ -18,27 +18,62 @@ type GeminiWebSearchOptions = {
   abortSignal: AbortSignal;
 };
 
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+function buildGeminiUrl(model: string): string {
+  const encoded = encodeURIComponent(model);
+  return `${GEMINI_API_BASE}/models/${encoded}:generateContent`;
+}
+
 export async function runGeminiWebSearch(
   options: GeminiWebSearchOptions
-): Promise<GenerateContentResponse> {
-  const client = new GoogleGenAI({ apiKey: options.apiKey });
-  return client.models.generateContent({
-    model: options.model,
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: options.query }],
-      },
-    ],
-    config: {
-      tools: [{ googleSearch: {} }],
-      abortSignal: options.abortSignal,
+): Promise<GeminiGenerateContentResponse> {
+  const response = await fetch(buildGeminiUrl(options.model), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': options.apiKey,
     },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: options.query }],
+        },
+      ],
+      tools: [{ googleSearch: {} }],
+    }),
+    signal: options.abortSignal,
   });
+
+  if (!response.ok) {
+    let message: string | undefined;
+    try {
+      const errorBody = (await response.json()) as {
+        error?: { message?: string };
+      };
+      message = errorBody.error?.message;
+    } catch {
+      // ignore
+    }
+
+    if (!message) {
+      try {
+        const fallbackText = await response.text();
+        message = fallbackText || undefined;
+      } catch {
+        // ignore
+      }
+    }
+
+    throw new Error(message ?? `Request failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as GeminiGenerateContentResponse;
 }
 
 export function formatWebSearchResponse(
-  response: GenerateContentResponse,
+  response: GeminiGenerateContentResponse,
   query: string
 ): WebSearchResult {
   const responseText = extractResponseText(response);
@@ -87,7 +122,9 @@ export function formatWebSearchResponse(
   return result;
 }
 
-function extractResponseText(response: GenerateContentResponse): string | undefined {
+function extractResponseText(
+  response: GeminiGenerateContentResponse
+): string | undefined {
   const parts = response.candidates?.[0]?.content?.parts;
   if (!parts || parts.length === 0) {
     return undefined;
@@ -107,12 +144,9 @@ function extractResponseText(response: GenerateContentResponse): string | undefi
 }
 
 function extractGroundingMetadata(
-  response: GenerateContentResponse
+  response: GeminiGenerateContentResponse
 ): GeminiMetadata | undefined {
-  const metadata = response.candidates?.[0]?.groundingMetadata as
-    | GeminiMetadata
-    | undefined;
-  return metadata;
+  return response.candidates?.[0]?.groundingMetadata;
 }
 
 function buildCitationInsertions(metadata?: GeminiMetadata): CitationInsertion[] {

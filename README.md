@@ -1,36 +1,36 @@
 # opencode-websearch-gemini
 
-Gemini Web Search plugin for [OpenCode](https://opencode.ai), inspired by [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+LLM-grounded web search plugin for [OpenCode](https://opencode.ai), inspired by [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
-This plugin exposes a Gemini-backed web search capability as an OpenCode custom tool, so your agent can call a single tool to perform Google-grounded web search.
+This plugin exposes a Gemini-backed, LLM-grounded web search capability as an OpenCode custom tool, so your agent can call a single tool to perform Google-grounded web search with inline citations.
 
 ---
 
 ## Features
 
-- `websearch` tool backed by Google Gemini web search, uses the official `@google/genai` SDK under the hood.
-- Uses the model configured at `provider.google.options.websearch.model` with the `googleSearch` tool enabled.
-- Outputs results in the same format as Gemini CLI.
+- `websearch_grounded` tool backed by Google Gemini web search over the official REST API.
+- Uses the model configured at `provider.google.options.websearch_grounded.model` (with optional legacy support for `provider.google.options.websearch.model`) with the `googleSearch` tool enabled.
+- Outputs LLM-grounded results with inline citations and a sources list, in a format similar to the Gemini CLI.
 
 ---
 
 ## How it works
 
-- The plugin registers a custom tool named `websearch` with OpenCode.
+- The plugin registers a custom tool named `websearch_grounded` with OpenCode.
 - When an agent calls this tool with a `query`, the plugin:
-  - Resolves a Gemini API key from the OpenCode Google provider auth (`opencode auth login`).
-  - Requires `provider.google.options.websearch.model` to be set in `opencode.json` and uses that model with the `googleSearch` tool.
+  - Resolves a Gemini API key from the OpenCode Google provider auth (`opencode auth login`) or `GEMINI_API_KEY`.
+  - Requires `provider.google.options.websearch_grounded.model` (or legacy `provider.google.options.websearch.model`) to be set in `opencode.json` and uses that model with the `googleSearch` tool.
   - Takes the returned answer text and grounding metadata.
   - Inserts citation markers into the text and builds a sources list.
-  - Returns a markdown-formatted answer plus a structured `sources` array.
+  - Returns a markdown-formatted, LLM-grounded answer plus a structured `sources` array.
 
 This mirrors the behavior of the Gemini CLI `WebSearchTool`, but packaged as an OpenCode plugin.
 
 From a user perspective:
 
 - You ask your OpenCode agent a question that needs web context.
-- The agent decides to call `websearch` with your natural-language query.
-- Gemini performs a web search and returns an answer with inline citations and a numbered "Sources" list at the bottom.
+- The agent decides to call `websearch_grounded` with your natural-language query.
+- Gemini performs a web search and returns an LLM-grounded answer with inline citations and a numbered "Sources" list at the bottom.
 
 ---
 
@@ -47,7 +47,7 @@ Add `opencode-websearch-gemini` to your `~/.config/opencode/opencode.json`:
 
 OpenCode does not upgrade plugins automatically, so you need to pin the version once the plugin upgraded.
 
-As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `websearch` when it needs web search.
+As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `websearch_grounded` when it needs LLM-grounded web search.
 
 ---
 
@@ -59,14 +59,14 @@ As long as the plugin is enabled and the Gemini API key is configured, any OpenC
    opencode auth login
    ```
 
-2. Set a websearch model in your `opencode.json` (required):
+2. Set a `websearch_grounded` model in your `opencode.json` (required):
 
    ```jsonc
    {
      "provider": {
        "google": {
          "options": {
-           "websearch": {
+           "websearch_grounded": {
              "model": "gemini-2.5-flash",
            },
          },
@@ -75,7 +75,7 @@ As long as the plugin is enabled and the Gemini API key is configured, any OpenC
    }
    ```
 
-If either the API key or the model is missing, `websearch` returns an error (`INVALID_AUTH` or `INVALID_MODEL`).
+If either the API key or the model is missing, `websearch_grounded` returns an error (`INVALID_AUTH` or `INVALID_MODEL`).
 
 ### OAuth support
 

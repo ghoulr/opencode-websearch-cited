@@ -44,7 +44,6 @@
     "test:agent": "AGENT=1 bun test index.test.ts"
   },
   "dependencies": {
-    "@google/genai": "^1.30.0",
     "@opencode-ai/plugin": "^1.0.125"
   }
 }

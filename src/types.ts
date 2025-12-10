@@ -9,7 +9,7 @@ export const WEBSEARCH_ERROR = {
 export type WebSearchErrorType = (typeof WEBSEARCH_ERROR)[keyof typeof WEBSEARCH_ERROR];
 
 export const WEBSEARCH_ERROR_MESSAGES = {
-  invalidToolArguments: 'websearch only accepts supported arguments.',
+  invalidToolArguments: "websearch_grounded only accepts a single 'query' field.",
   invalidQuery: "The 'query' parameter cannot be empty.",
   invalidAuth: 'Web search is not configured: missing or invalid auth.',
   invalidModel: 'Web search is not configured: missing or invalid model.',
@@ -43,6 +43,25 @@ export type GeminiSupport = {
 export type GeminiMetadata = {
   groundingChunks?: GeminiChunk[];
   groundingSupports?: GeminiSupport[];
+};
+
+export type GeminiTextPart = {
+  text?: string;
+  thought?: unknown;
+};
+
+export type GeminiContent = {
+  role?: string;
+  parts?: GeminiTextPart[];
+};
+
+export type GeminiCandidate = {
+  content?: GeminiContent;
+  groundingMetadata?: GeminiMetadata;
+};
+
+export type GeminiGenerateContentResponse = {
+  candidates?: GeminiCandidate[];
 };
 
 export type WebSearchResult = {

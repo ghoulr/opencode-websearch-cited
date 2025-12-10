@@ -10,16 +10,16 @@ Default to using Bun instead of Node.js
 
 ## Project scope
 
-This repository contains an OpenCode plugin that exposes a Gemini-backed web search capability as a custom tool
+This repository contains an OpenCode plugin that exposes an LLM-grounded web search capability backed by Gemini as a custom tool
 
-- The primary tool is `websearch`
-- The tool uses `@google/genai` to call a Gemini model configured with the `googleSearch` tool
+- The primary tool is `websearch_grounded`
+- The tool calls the Gemini websearch endpoint directly over HTTP with the `googleSearch` tool enabled
 - The tool returns markdown output with inline citations and a sources list
 
 ## Coding and implementation
 
-- Keep the implementation minimal and focused on the `websearch` tool
-- Prefer small, single-purpose functions
+- Keep the implementation minimal and focused on the `websearch_grounded` tool
+- Prefer small, single-purpose functions, use aliases when import
 - Since we are building a plugin, minimal dependencies will be a better design choice
 - Let errors propagate instead of swallowing them, follow the `fast fail` principal, let callers to deal with the error
 - Do not add comments in code, logs, or exceptions beyond what is strictly necessary
