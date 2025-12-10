@@ -84,11 +84,43 @@ Example error shape:
 ### Auth and configuration
 
 - The websearch tools **do not perform interactive auth flows themselves**.
-- They rely on **OpenCode providers and/or environment variables** to supply credentials.
+- They rely on **OpenCode providers, provider options, and/or environment variables** to supply credentials and defaults.
 - Each provider section below specifies:
-  - Provider id (for OpenCode)
+  - Provider id (for OpenCode, when applicable)
   - How credentials are resolved
+  - How `provider.<id>.options.websearch` is interpreted
   - Which env vars act as fallbacks
+
+#### Provider options (`provider.*.options.websearch`)
+
+- Opencode's main config file may define provider-specific websearch defaults, for example:
+
+  ```jsonc
+  {
+    "provider": {
+      "google": {
+        "options": {
+          "websearch": {
+            "model": "gemini-2.5-flash",
+          },
+        },
+      },
+      "openai": {
+        "options": {
+          "websearch": {
+            "model": "openai/gpt-5.1-codex",
+          },
+        },
+      },
+    },
+  }
+  ```
+
+- Each provider section documents which keys are read from this `websearch` block.
+- Unless otherwise stated, precedence is:
+  - Tool arguments (none today) >
+  - `provider.<id>.options.websearch` >
+  - Internal hard-coded defaults.
 
 ---
 
@@ -114,20 +146,29 @@ error.type === 'MISSING_GEMINI_API_KEY';
 
 ### Underlying API call
 
-- Library: `@google/genai` (`GoogleGenAI`).
-- Model: hard-coded `gemini-2.5-flash`.
-- Call:
+- Transport: plain HTTP to the Gemini Generative Language API.
+- Endpoint: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
+- Model:
+  - Default is `gemini-2.5-flash`.
+  - If `provider.google.options.websearch.model` is a non-empty string, that value overrides the default.
+- Request headers (API-key based flow):
+  - `x-goog-api-key: <GEMINI_API_KEY or provider api key>`
+  - `Content-Type: application/json`
+- Request body (simplified shape):
 
-  ```ts
-  client.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [{ text: query }] }],
-    config: {
-      tools: [{ googleSearch: {} }],
-      abortSignal: context.abort,
-    },
-  });
+  ```jsonc
+  {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [{ "text": "<query>" }],
+      },
+    ],
+    "tools": [{ "googleSearch": {} }],
+  }
   ```
+
+- The tool uses the Opencode tool context `abort` signal as the HTTP `AbortSignal`.
 
 ### Response mapping
 
@@ -185,10 +226,9 @@ This provider uses the existing `opencode-openai-codex-auth` plugin to handle al
 - Responsibilities:
   - Implement OAuth (PKCE, local callback server, token exchange, refresh).
   - Decode JWT, extract ChatGPT account id.
-  - Override `baseURL` and `fetch` used by `@opencode-ai/sdk` for `openai`.
-  - Rewrite OpenAI Platform-style requests to the ChatGPT Codex backend.
+  - Integrate with Opencode's OpenAI provider by overriding the HTTP layer (`baseURL` and `fetch`) so that server-side LLM calls are sent to the ChatGPT Codex backend instead of the public Platform API.
 
-The websearch plugin **does not** talk to the OAuth endpoints directly. It calls the OpenAI provider through the standard `client` instance, and the OAuth plugin intercepts and rewrites those calls.
+The websearch plugin **does not** implement the OAuth dance itself. It reuses the tokens stored by this plugin (via `getAuth()`), but performs its own HTTP requests directly to the Codex backend rather than going through `@opencode-ai/sdk` or the Opencode client.
 
 ### Tool
 
@@ -202,6 +242,14 @@ The websearch plugin **does not** talk to the OAuth endpoints directly. It calls
 - Requires the user to:
   - Install and enable `opencode-openai-codex-auth`.
   - Authenticate with `provider: "openai"` using the OAuth method.
+- The websearch plugin reads the stored OAuth record for `provider: "openai"` via `getAuth()` and uses the current `access` token as a bearer token for its HTTP requests.
+
+### Configuration (`provider.openai.options.websearch`)
+
+- Opencode config may define OpenAI websearch defaults under `provider.openai.options.websearch`.
+- Supported keys (initially):
+  - `model?: string` – Codex model identifier to use for websearch when defined.
+- If this block is missing or invalid, the implementation falls back to an internal default Codex model.
 
 If no valid OpenAI OAuth session is present, the tool should:
 
@@ -216,20 +264,11 @@ If no valid OpenAI OAuth session is present, the tool should:
 
 ### Underlying API call
 
-Conceptually, the tool calls the OpenAI provider via `@opencode-ai/sdk`:
-
-- Use `client.responses.create` / equivalent, with a model configured under `provider.openai`.
-- The OAuth plugin rewrites this into a ChatGPT Codex backend call using its custom `fetch` implementation.
-
-Example (logical shape):
-
-```ts
-const response = await client.responses.create({
-  model: 'openai/gpt-5.1', // or a configured codex variant
-  input: query,
-  // Depending on what Codex backend supports, we may not have an explicit web_search tool flag here.
-});
-```
+- Transport: plain HTTP to the same ChatGPT Codex backend that `opencode-openai-codex-auth` targets.
+- Auth header: `Authorization: Bearer <accessTokenFromAuth>`.
+- Content-Type: `application/json`.
+- Request body: follows the same logical shape as an OpenAI Responses API call, with the chosen Codex model and the user query as input. The exact endpoint path and any additional headers are shared with the Codex OAuth plugin's request helpers.
+- The websearch plugin does **not** use `@opencode-ai/sdk` or `client.responses.create` for this call; it constructs JSON and issues an HTTP `fetch` directly.
 
 Notes:
 
@@ -258,7 +297,7 @@ Optional future enhancement (not in this spec):
 
 ### Error handling
 
-- Network / backend errors are surfaced from the OpenAI provider.
+- Network / backend errors from the Codex HTTP call are surfaced as failures.
 - The tool wraps them into `WebSearchResult.error` with an implementation-specific type, e.g. `OPENAI_OAUTH_WEB_SEARCH_FAILED`.
 
 ---

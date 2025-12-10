@@ -25,7 +25,7 @@ This repository contains an OpenCode plugin that exposes a Gemini-backed web sea
 - Do not add comments in code, logs, or exceptions beyond what is strictly necessary
 - We must NEVER have type any anywhere, unless absolutely, positively necessary
 - If you are working with an external API, check node_modules for the type definitions as needed instead of assuming things
-- After any change, use `bun check` to pass `eslint` and `tsc`
+- After any change of code, use `bun check` to pass `eslint` and `tsc`
 
 ## Testing
 
