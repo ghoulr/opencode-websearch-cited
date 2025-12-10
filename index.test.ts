@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'bun:test';
 import type { PluginInput } from '@opencode-ai/plugin';
 import type { Auth as ProviderAuth, Provider } from '@opencode-ai/sdk';
 import type { GenerateContentResponse } from '@google/genai';
-import type { GeminiSearchResult } from './index';
+import type { WebSearchResult } from './index';
 
 const mockGenerateContent = vi.fn();
 const mockGoogleGenAI = vi.fn(() => ({
@@ -274,8 +274,8 @@ describe('WebsearchGeminiPlugin', () => {
 
 type CandidateInput = NonNullable<GenerateContentResponse['candidates']>[number];
 
-function parseResult(raw: string): GeminiSearchResult {
-  return JSON.parse(raw) as unknown as GeminiSearchResult;
+function parseResult(raw: string): WebSearchResult {
+  return JSON.parse(raw) as unknown as WebSearchResult;
 }
 
 type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;

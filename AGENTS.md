@@ -16,12 +16,11 @@ This repository contains an OpenCode plugin that exposes a Gemini-backed web sea
 - The tool uses `@google/genai` to call a Gemini model configured with the `googleSearch` tool
 - The tool returns markdown output with inline citations and a sources list
 
-Refer to `docs/spec.md` for the detailed design specification
-
 ## Coding and implementation
 
 - Keep the implementation minimal and focused on the `websearch_gemini` tool
 - Prefer small, single-purpose functions
+- Since we are building a plugin, minimal dependencies will be a better design choice
 - Let errors propagate instead of swallowing them, follow the `fast fail` principal, let callers to deal with the error
 - Do not add comments in code, logs, or exceptions beyond what is strictly necessary
 - We must NEVER have type any anywhere, unless absolutely, positively necessary
