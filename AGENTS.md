@@ -12,13 +12,13 @@ Default to using Bun instead of Node.js
 
 This repository contains an OpenCode plugin that exposes a Gemini-backed web search capability as a custom tool
 
-- The primary tool is `websearch_gemini`
+- The primary tool is `websearch`
 - The tool uses `@google/genai` to call a Gemini model configured with the `googleSearch` tool
 - The tool returns markdown output with inline citations and a sources list
 
 ## Coding and implementation
 
-- Keep the implementation minimal and focused on the `websearch_gemini` tool
+- Keep the implementation minimal and focused on the `websearch` tool
 - Prefer small, single-purpose functions
 - Since we are building a plugin, minimal dependencies will be a better design choice
 - Let errors propagate instead of swallowing them, follow the `fast fail` principal, let callers to deal with the error

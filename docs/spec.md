@@ -2,7 +2,7 @@
 
 This document defines a common interface and provider-specific behavior for web search tools backed by different providers:
 
-- Google Gemini (current `websearch_gemini` implementation)
+- Google Gemini (current `websearch` implementation)
 - OpenAI via OAuth (OpenAI Codex OAuth plugin)
 - OpenRouter Responses API with web search plugin
 
@@ -13,7 +13,7 @@ The goal is to let OpenCode agents call a single-purpose tool per provider (or a
 ## Goals
 
 - Provide a **unified result shape** for all providers.
-- Keep the **existing `websearch_gemini` behavior fully compatible**.
+- Keep the **existing `websearch` behavior fully compatible**.
 - Allow adding **OpenAI (OAuth)** and **OpenRouter** backed web search without changing callers.
 - Make it explicit **which provider can return structured citations** and how they are derived.
 
@@ -108,7 +108,7 @@ Example error shape:
       "openai": {
         "options": {
           "websearch": {
-            "model": "openai/gpt-5.1-codex",
+            "model": "openai/gpt-5.1-low",
           },
         },
       },
@@ -128,7 +128,7 @@ Example error shape:
 
 ### Tool
 
-- Name: `websearch_gemini`
+- Name: `websearch`
 - Description: performs web search via Google Gemini with the `googleSearch` tool.
 - Provider id: `google`
 

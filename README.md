@@ -8,18 +8,18 @@ This plugin exposes a Gemini-backed web search capability as an OpenCode custom 
 
 ## Features
 
-- `websearch_gemini` tool backed by Google Gemini web search, uses the official `@google/genai` SDK under the hood.
-- Always calls the `gemini-2.5-flash` model with the `googleSearch` tool enabled.
+- `websearch` tool backed by Google Gemini web search, uses the official `@google/genai` SDK under the hood.
+- Uses the model configured at `provider.google.options.websearch.model` with the `googleSearch` tool enabled.
 - Outputs results in the same format as Gemini CLI.
 
 ---
 
 ## How it works
 
-- The plugin registers a custom tool named `websearch_gemini` with OpenCode.
+- The plugin registers a custom tool named `websearch` with OpenCode.
 - When an agent calls this tool with a `query`, the plugin:
-  - Resolves a Gemini API key first from the OpenCode Google provider and then falls back to the `GEMINI_API_KEY` environment variable.
-  - Uses `@google/genai` to call a Gemini model configured with the `googleSearch` tool.
+  - Resolves a Gemini API key from the OpenCode Google provider auth (`opencode auth login`).
+  - Requires `provider.google.options.websearch.model` to be set in `opencode.json` and uses that model with the `googleSearch` tool.
   - Takes the returned answer text and grounding metadata.
   - Inserts citation markers into the text and builds a sources list.
   - Returns a markdown-formatted answer plus a structured `sources` array.
@@ -29,7 +29,7 @@ This mirrors the behavior of the Gemini CLI `WebSearchTool`, but packaged as an 
 From a user perspective:
 
 - You ask your OpenCode agent a question that needs web context.
-- The agent decides to call `websearch_gemini` with your natural-language query.
+- The agent decides to call `websearch` with your natural-language query.
 - Gemini performs a web search and returns an answer with inline citations and a numbered "Sources" list at the bottom.
 
 ---
@@ -47,26 +47,39 @@ Add `opencode-websearch-gemini` to your `~/.config/opencode/opencode.json`:
 
 OpenCode does not upgrade plugins automatically, so you need to pin the version once the plugin upgraded.
 
-As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `websearch_gemini` when it needs web search.
+As long as the plugin is enabled and the Gemini API key is configured, any OpenCode agent that can use tools will be able to call `websearch` when it needs web search.
 
 ---
 
-## Setup Gemini API key
+## Configure Gemini web search
 
-This plugin needs a Gemini API key and resolves it in this order:
-
-1. **OpenCode auth store**: run `opencode auth login`, select the Google provider, and input your Gemini API key when prompted.
-2. **Environment fallback**: if you prefer not to store the key, export it as `GEMINI_API_KEY`:
+1. Authenticate the Google provider with a Gemini API key:
 
    ```bash
-   export GEMINI_API_KEY="your-gemini-api-key"
+   opencode auth login
    ```
 
-If neither source is available, `websearch_gemini` returns a `MISSING_GEMINI_API_KEY` error to the agent.
+2. Set a websearch model in your `opencode.json` (required):
+
+   ```jsonc
+   {
+     "provider": {
+       "google": {
+         "options": {
+           "websearch": {
+             "model": "gemini-2.5-flash",
+           },
+         },
+       },
+     },
+   }
+   ```
+
+If either the API key or the model is missing, `websearch` returns an error (`INVALID_AUTH` or `INVALID_MODEL`).
 
 ### OAuth support
 
-This plugin only supports **API key based authentication** for Gemini. If you are using [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth), re-authenticating with `opencode auth login` will overwrite your OAuth token, so use the `GEMINI_API_KEY` environment variable instead.
+This plugin only supports **API key based authentication** for Gemini. If you are using [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth), re-authenticating with `opencode auth login` will overwrite your OAuth token.
 
 ---
 

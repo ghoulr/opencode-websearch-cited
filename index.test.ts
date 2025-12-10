@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'bun:test';
 import type { PluginInput } from '@opencode-ai/plugin';
-import type { Auth as ProviderAuth, Provider } from '@opencode-ai/sdk';
+import type { Auth as ProviderAuth, Config, Provider } from '@opencode-ai/sdk';
 import type { GenerateContentResponse } from '@google/genai';
 import type { WebSearchResult } from './index';
 
@@ -10,6 +10,18 @@ const mockGoogleGenAI = vi.fn(() => ({
     generateContent: mockGenerateContent,
   },
 }));
+
+const WEBSEARCH_CONFIG: Config = {
+  provider: {
+    google: {
+      options: {
+        websearch: {
+          model: 'gemini-2.5-flash',
+        },
+      },
+    },
+  },
+};
 
 void vi.mock('@google/genai', () => {
   return {
@@ -138,34 +150,70 @@ describe('formatWebSearchResponse', () => {
 });
 
 describe('WebsearchGeminiPlugin', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
+
   beforeEach(() => {
     mockGenerateContent.mockReset();
     mockGoogleGenAI.mockClear();
-    process.env.GEMINI_API_KEY = 'test-key';
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    delete process.env.GEMINI_API_KEY;
+    warnSpy.mockRestore();
+    vi.restoreAllMocks();
   });
 
   it('returns configuration error when API key is missing', async () => {
-    delete process.env.GEMINI_API_KEY;
-    const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch_gemini;
+    const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
+    const tool = plugin.tool?.websearch;
 
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'opencode' }, context);
     const result = parseResult(raw);
 
-    expect(result.error?.type).toBe('MISSING_GEMINI_API_KEY');
-    expect(result.llmContent).toContain('log in to the Google provider');
+    expect(result.error?.type).toBe('INVALID_AUTH');
+    expect(result.llmContent).toContain('missing or invalid auth');
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it('returns invalid model when websearch model is not configured', async () => {
+    const plugin = await createPluginHooks();
+    const tool = plugin.tool?.websearch;
+    const context = createToolContext();
+
+    const raw = await tool!.execute({ query: 'opencode' }, context);
+    const result = parseResult(raw);
+
+    expect(result.error?.type).toBe('INVALID_MODEL');
+    expect(result.llmContent).toContain('missing or invalid model');
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it('returns invalid model when configured model is blank', async () => {
+    const plugin = await createPluginHooks({
+      provider: {
+        google: {
+          options: {
+            websearch: { model: '' },
+          },
+        },
+      },
+    } as Config);
+    const tool = plugin.tool?.websearch;
+    const context = createToolContext();
+
+    const raw = await tool!.execute({ query: 'opencode' }, context);
+    const result = parseResult(raw);
+
+    expect(result.error?.type).toBe('INVALID_MODEL');
+    expect(result.llmContent).toContain('missing or invalid model');
     expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 
   it('rejects extra arguments', async () => {
     const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch_gemini;
+    const tool = plugin.tool?.websearch;
     const context = createToolContext();
 
     const raw = await tool!.execute(
@@ -200,8 +248,9 @@ describe('WebsearchGeminiPlugin', () => {
       })
     );
 
-    const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch_gemini;
+    const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
+    const tool = plugin.tool?.websearch;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -214,10 +263,12 @@ describe('WebsearchGeminiPlugin', () => {
   });
 
   it('returns Gemini failure details', async () => {
-    mockGenerateContent.mockRejectedValue(new Error('API Failure'));
+    const failure = new Error('API Failure');
+    mockGenerateContent.mockRejectedValue(failure);
 
-    const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch_gemini;
+    const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
+    const tool = plugin.tool?.websearch;
     const context = createToolContext();
 
     const raw = await tool!.execute({ query: 'sample' }, context);
@@ -226,10 +277,10 @@ describe('WebsearchGeminiPlugin', () => {
     expect(result.error?.type).toBe('GEMINI_WEB_SEARCH_FAILED');
     expect(result.llmContent).toContain('currently unavailable');
     expect(result.llmContent).toContain('API Failure');
+    expect(warnSpy).toHaveBeenCalledWith('Gemini web search failed.', failure);
   });
 
-  it('prefers stored Google provider API key over environment variable', async () => {
-    process.env.GEMINI_API_KEY = 'env-key';
+  it('uses the API key from provider auth', async () => {
     mockGenerateContent.mockResolvedValue(
       createResponse({
         content: {
@@ -239,10 +290,10 @@ describe('WebsearchGeminiPlugin', () => {
       })
     );
 
-    const plugin = await createPluginHooks();
+    const plugin = await createPluginHooks(WEBSEARCH_CONFIG);
     await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
 
-    const tool = plugin.tool?.websearch_gemini;
+    const tool = plugin.tool?.websearch;
     const context = createToolContext();
 
     await tool!.execute({ query: 'stored key query' }, context);
@@ -250,7 +301,7 @@ describe('WebsearchGeminiPlugin', () => {
     expect(mockGoogleGenAI).toHaveBeenCalledWith({ apiKey: 'stored-key' });
   });
 
-  it('always requests the default Gemini model', async () => {
+  it('uses the configured model', async () => {
     mockGenerateContent.mockResolvedValue(
       createResponse({
         content: {
@@ -260,14 +311,23 @@ describe('WebsearchGeminiPlugin', () => {
       })
     );
 
-    const plugin = await createPluginHooks();
-    const tool = plugin.tool?.websearch_gemini;
+    const plugin = await createPluginHooks({
+      provider: {
+        google: {
+          options: {
+            websearch: { model: 'gemini-custom-model' },
+          },
+        },
+      },
+    } as Config);
+    await invokeAuthLoader(plugin, { type: 'api', key: 'stored-key' });
+    const tool = plugin.tool?.websearch;
     const context = createToolContext();
 
     await tool!.execute({ query: 'model query' }, context);
 
     expect(mockGenerateContent).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gemini-2.5-flash' })
+      expect.objectContaining({ model: 'gemini-custom-model' })
     );
   });
 });
@@ -280,8 +340,12 @@ function parseResult(raw: string): WebSearchResult {
 
 type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;
 
-async function createPluginHooks() {
-  return WebsearchGeminiPlugin({} as PluginInput);
+async function createPluginHooks(config?: Config) {
+  const plugin = await WebsearchGeminiPlugin({} as PluginInput);
+  if (config && plugin.config) {
+    await plugin.config(config);
+  }
+  return plugin;
 }
 
 async function invokeAuthLoader(plugin: PluginHooks, auth?: ProviderAuth) {

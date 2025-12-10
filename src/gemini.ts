@@ -1,6 +1,10 @@
 import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 import type { Auth as ProviderAuth } from '@opencode-ai/sdk';
-import type { GeminiMetadata, WebSearchResult } from './types.ts';
+import {
+  type GeminiMetadata,
+  type WebSearchErrorType,
+  type WebSearchResult,
+} from './types.ts';
 
 type CitationInsertion = {
   index: number;
@@ -174,11 +178,7 @@ function insertMarkersByUtf8Index(
 
 export function resolveGeminiApiKey(storedKey?: string): string | undefined {
   const normalizedStored = storedKey?.trim();
-  if (normalizedStored) {
-    return normalizedStored;
-  }
-  const envKey = process.env.GEMINI_API_KEY?.trim();
-  return envKey && envKey !== '' ? envKey : undefined;
+  return normalizedStored && normalizedStored !== '' ? normalizedStored : undefined;
 }
 
 export function extractApiKey(authDetails?: ProviderAuth | null): string | undefined {
@@ -191,7 +191,7 @@ export function extractApiKey(authDetails?: ProviderAuth | null): string | undef
 
 export function buildErrorResult(
   message: string,
-  code: string,
+  code: WebSearchErrorType,
   details?: string
 ): WebSearchResult {
   const llmContent = details

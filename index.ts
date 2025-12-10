@@ -1,4 +1,5 @@
 import { type Plugin, tool } from '@opencode-ai/plugin';
+import type { Config } from '@opencode-ai/sdk';
 
 import {
   buildErrorResult,
@@ -7,8 +8,7 @@ import {
   resolveGeminiApiKey,
   runGeminiWebSearch,
 } from '@/gemini';
-
-const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+import { WEBSEARCH_ERROR, WEBSEARCH_ERROR_MESSAGES } from '@/types';
 
 const GEMINI_PROVIDER_ID = 'google';
 
@@ -27,6 +27,29 @@ const WEBSEARCH_ALLOWED_KEYS_DESCRIPTION = Array.from(WEBSEARCH_ALLOWED_KEYS)
 
 export const WebsearchGeminiPlugin: Plugin = () => {
   let googleApiKeyFromAuth: string | undefined;
+  let geminiWebsearchModel: string | undefined;
+
+  function parseWebsearchModel(config: Config): string | undefined {
+    const providerConfig = config.provider?.[GEMINI_PROVIDER_ID];
+    const providerOptions = providerConfig?.options;
+    if (
+      providerOptions &&
+      typeof providerOptions === 'object' &&
+      'websearch' in providerOptions
+    ) {
+      const websearch = (providerOptions as { websearch?: unknown }).websearch;
+      if (websearch && typeof websearch === 'object' && !Array.isArray(websearch)) {
+        const candidate = (websearch as { model?: unknown }).model;
+        if (typeof candidate === 'string') {
+          const trimmed = candidate.trim();
+          if (trimmed !== '') {
+            return trimmed;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
 
   return Promise.resolve({
     auth: {
@@ -47,8 +70,12 @@ export const WebsearchGeminiPlugin: Plugin = () => {
         },
       ],
     },
+    config: (config) => {
+      geminiWebsearchModel = parseWebsearchModel(config);
+      return Promise.resolve();
+    },
     tool: {
-      websearch_gemini: tool({
+      websearch: tool({
         description: GEMINI_TOOL_DESCRIPTION,
         args: WEBSEARCH_ARGS,
         async execute(args, context) {
@@ -57,8 +84,8 @@ export const WebsearchGeminiPlugin: Plugin = () => {
           if (extraKeys.length > 0) {
             return JSON.stringify(
               buildErrorResult(
-                "websearch_gemini only accepts a single 'query' field.",
-                'INVALID_TOOL_ARGUMENTS',
+                WEBSEARCH_ERROR_MESSAGES.invalidToolArguments,
+                WEBSEARCH_ERROR.invalidToolArguments,
                 `Unknown argument(s): ${extraKeys.join(
                   ', '
                 )}, only ${WEBSEARCH_ALLOWED_KEYS_DESCRIPTION} supported.`
@@ -70,8 +97,18 @@ export const WebsearchGeminiPlugin: Plugin = () => {
           if (!query) {
             return JSON.stringify(
               buildErrorResult(
-                "The 'query' parameter cannot be empty.",
-                'INVALID_QUERY'
+                WEBSEARCH_ERROR_MESSAGES.invalidQuery,
+                WEBSEARCH_ERROR.invalidQuery
+              )
+            );
+          }
+
+          if (!geminiWebsearchModel) {
+            return JSON.stringify(
+              buildErrorResult(
+                WEBSEARCH_ERROR_MESSAGES.invalidModel,
+                WEBSEARCH_ERROR.invalidModel,
+                'Set provider.google.options.websearch.model to a supported Gemini model.'
               )
             );
           }
@@ -80,8 +117,9 @@ export const WebsearchGeminiPlugin: Plugin = () => {
           if (!apiKey) {
             return JSON.stringify(
               buildErrorResult(
-                'Gemini web search is not configured. Please log in to the Google provider via `opencode auth login` or set GEMINI_API_KEY.',
-                'MISSING_GEMINI_API_KEY'
+                WEBSEARCH_ERROR_MESSAGES.invalidAuth,
+                WEBSEARCH_ERROR.invalidAuth,
+                'Authenticate the Google provider via `opencode auth login` with a Gemini API key.'
               )
             );
           }
@@ -90,16 +128,17 @@ export const WebsearchGeminiPlugin: Plugin = () => {
           try {
             response = await runGeminiWebSearch({
               apiKey,
-              model: DEFAULT_GEMINI_MODEL,
+              model: geminiWebsearchModel,
               query,
               abortSignal: context.abort,
             });
           } catch (error) {
+            console.warn('Gemini web search failed.', error);
             const message = error instanceof Error ? error.message : String(error);
             return JSON.stringify(
               buildErrorResult(
-                'Gemini web search is currently unavailable. Please check your Gemini configuration and try again.',
-                'GEMINI_WEB_SEARCH_FAILED',
+                WEBSEARCH_ERROR_MESSAGES.webSearchFailed,
+                WEBSEARCH_ERROR.webSearchFailed,
                 `Gemini web search request failed: ${message}`
               )
             );
