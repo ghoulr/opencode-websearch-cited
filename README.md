@@ -32,7 +32,7 @@ Add `opencode-websearch-cited` to your `~/.config/opencode/opencode.json`.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.1.0", "opencode-websearch-cited@1.0.0"]
+  "plugin": ["...other plugins", "opencode-websearch-cited@1.0.0"]
 }
 ```
 
@@ -45,7 +45,7 @@ As long as the plugin is enabled and the provider auth is configured, any OpenCo
 ## Configure web search
 
 Log in with `opencode auth login` first.
-This plugin is compatible with [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth.git)
+This plugin is compatible with [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth.git) and [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth)
 
 Set a `websearch_cited` model in your OpenCode config (required). If you use `opencode.json` (strict JSON), do not use trailing commas.
 

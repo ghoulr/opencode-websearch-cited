@@ -335,6 +335,126 @@ describe('WebsearchCitedPlugin', () => {
     expect(typeof url === 'string' ? url : '').toContain('gemini-custom-model');
   });
 
+  it('uses Code Assist endpoint and project when Google OAuth is present', async () => {
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse({
+        response: createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'OAuth response' }],
+          },
+        }),
+      })
+    );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'test-access-token',
+      refresh: 'test-refresh|user-project|managed-project',
+      expires: Date.now() + 60_000,
+    });
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(result).toContain('OAuth response');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof url === 'string' ? url : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:generateContent'
+    );
+
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer test-access-token');
+
+    const bodyText = typeof init?.body === 'string' ? init.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.project).toBe('user-project');
+    expect(parsed.model).toBe('gemini-2.5-flash');
+
+    const request = parsed.request;
+    expect(request && typeof request === 'object').toBe(true);
+  });
+
+  it('prefers explicit projectId over managedProjectId for Google OAuth', async () => {
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse({
+        response: createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'OAuth project preference' }],
+          },
+        }),
+      })
+    );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'test-access-token',
+      refresh: 'refresh-token|user-project|managed-project',
+      expires: Date.now() + 60_000,
+    });
+    const context = createToolContext();
+
+    await tool.execute({ query: 'oauth query' }, context);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const bodyText = typeof init?.body === 'string' ? init.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.project).toBe('user-project');
+  });
+
+  it('uses managedProjectId when projectId is empty for Google OAuth', async () => {
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse({
+        response: createResponse({
+          content: {
+            role: 'model',
+            parts: [{ text: 'OAuth managed project fallback' }],
+          },
+        }),
+      })
+    );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'test-access-token',
+      refresh: 'refresh-token||managed-project',
+      expires: Date.now() + 60_000,
+    });
+    const context = createToolContext();
+
+    await tool.execute({ query: 'oauth query' }, context);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const bodyText = typeof init?.body === 'string' ? init.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.project).toBe('managed-project');
+  });
+
+  it('rejects Google OAuth when project metadata is missing', async () => {
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'test-access-token',
+      refresh: 'refresh-token',
+      expires: Date.now() + 60_000,
+    });
+
+    const context = createToolContext();
+
+    await expectThrowMessage(
+      () => tool.execute({ query: 'oauth query' }, context),
+      'Google Gemini requires a Google Cloud project'
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns invalid auth when OpenAI websearch is configured but auth is missing', async () => {
     const { tool } = await createEnv({
       provider: {

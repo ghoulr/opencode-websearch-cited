@@ -66,7 +66,7 @@ type GeminiClientConfig =
       mode: 'oauth';
       accessToken: string;
       model: string;
-      projectId?: string;
+      projectId: string;
     };
 
 interface WebSearchClient {
@@ -273,19 +273,18 @@ class GeminiApiKeyClient implements WebSearchClient {
 class GeminiOAuthClient implements WebSearchClient {
   private readonly accessToken: string;
   private readonly model: string;
-  private readonly projectId?: string;
+  private readonly projectId: string;
 
-  constructor(accessToken: string, model: string, projectId?: string) {
+  constructor(accessToken: string, model: string, projectId: string) {
     const normalizedToken = accessToken.trim();
     const normalizedModel = model.trim();
-    const normalizedProject = projectId?.trim();
-    if (!normalizedToken || !normalizedModel) {
+    const normalizedProject = projectId.trim();
+    if (!normalizedToken || !normalizedModel || !normalizedProject) {
       throw new Error('Invalid Google OAuth configuration');
     }
     this.accessToken = normalizedToken;
     this.model = normalizedModel;
-    this.projectId =
-      normalizedProject && normalizedProject !== '' ? normalizedProject : undefined;
+    this.projectId = normalizedProject;
   }
 
   async search(query: string, abortSignal: AbortSignal): Promise<string> {
@@ -303,13 +302,10 @@ class GeminiOAuthClient implements WebSearchClient {
     };
 
     const body: Record<string, unknown> = {
+      project: this.projectId,
       model: this.model,
       request: requestPayload,
     };
-
-    if (this.projectId) {
-      body.project = this.projectId;
-    }
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -445,22 +441,27 @@ function createWebSearchClientForGoogle(
       throw new Error('Missing Google OAuth access token');
     }
 
-    const refreshValue = oauthAuth.refresh;
-    let projectId: string | undefined;
-    if (refreshValue) {
-      const parts = refreshValue.split('|');
-      if (parts.length >= 3 && parts[2] && parts[2].trim() !== '') {
-        projectId = parts[2].trim();
-      } else if (parts.length >= 2 && parts[1] && parts[1].trim() !== '') {
-        projectId = parts[1].trim();
-      }
+    const refreshValue = oauthAuth.refresh?.trim() ?? '';
+    const parts = refreshValue.split('|');
+    const projectIdRaw = parts.length >= 2 ? (parts[1] ?? '') : '';
+    const managedProjectIdRaw = parts.length >= 3 ? (parts[2] ?? '') : '';
+
+    const projectId = projectIdRaw.trim() !== '' ? projectIdRaw.trim() : undefined;
+    const managedProjectId =
+      managedProjectIdRaw.trim() !== '' ? managedProjectIdRaw.trim() : undefined;
+
+    const effectiveProjectId = projectId ?? managedProjectId;
+    if (!effectiveProjectId) {
+      throw new Error(
+        'Google Gemini requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.'
+      );
     }
 
     return createGeminiWebSearchClient({
       mode: 'oauth',
       accessToken,
       model,
-      projectId,
+      projectId: effectiveProjectId,
     });
   }
 
