@@ -16,7 +16,8 @@ const WEBSEARCH_CONFIG: Config = {
   },
 };
 
-const { formatWebSearchResponse, WebsearchGeminiPlugin } = await import('./index');
+const { formatWebSearchResponse, WebsearchGeminiPlugin, WebsearchOpenAIAuthPlugin } =
+  await import('./index');
 
 describe('formatWebSearchResponse', () => {
   it('returns fallback when Gemini response has no text', () => {
@@ -328,11 +329,71 @@ describe('WebsearchGeminiPlugin', () => {
     const [url] = fetchMock.mock.calls[0] ?? [];
     expect(typeof url === 'string' ? url : '').toContain('gemini-custom-model');
   });
+
+  it('returns invalid auth when OpenAI websearch is configured but auth is missing', async () => {
+    const plugin = await createPluginHooks({
+      provider: {
+        openai: {
+          options: {
+            websearch_grounded: { model: 'gpt-4o-search-preview' },
+          },
+        },
+      },
+    } as Config);
+    const tool = plugin.tool?.websearch_grounded;
+    const context = createToolContext();
+
+    const raw = await tool!.execute({ query: 'openai' }, context);
+    const result = parseResult(raw);
+
+    expect(result.error?.type).toBe('INVALID_AUTH');
+    expect(result.llmContent).toContain('missing or invalid auth');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the OpenAI responses endpoint when configured and auth is present', async () => {
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse(createOpenAIResponseBody('Search result body'))
+    );
+
+    const plugin = await createPluginHooks({
+      provider: {
+        openai: {
+          options: {
+            websearch_grounded: { model: 'gpt-4o-search-preview' },
+          },
+        },
+      },
+    } as Config);
+
+    const openaiAuthHooks = await createOpenAIAuthHooks();
+    await invokeOpenAIAuthLoader(openaiAuthHooks, {
+      type: 'oauth',
+      access: 'test-access-token',
+      refresh: 'test-refresh-token',
+      expires: Date.now() + 60_000,
+    });
+
+    const tool = plugin.tool?.websearch_grounded;
+    const context = createToolContext();
+
+    const raw = await tool!.execute({ query: 'openai web search' }, context);
+    const result = parseResult(raw);
+
+    expect(result.error).toBeUndefined();
+    expect(result.llmContent).toContain('Web search results for "openai web search"');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof url === 'string' ? url : '').toContain('/codex/responses');
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer test-access-token');
+  });
 });
 
 type CandidateInput = NonNullable<GeminiGenerateContentResponse['candidates']>[number];
 
 type PluginHooks = Awaited<ReturnType<typeof WebsearchGeminiPlugin>>;
+type OpenAIAuthHooks = Awaited<ReturnType<typeof WebsearchOpenAIAuthPlugin>>;
 
 function parseResult(raw: string): WebSearchResult {
   return JSON.parse(raw) as unknown as WebSearchResult;
@@ -353,6 +414,18 @@ async function invokeAuthLoader(plugin: PluginHooks, auth?: ProviderAuth) {
   await plugin.auth.loader(() => Promise.resolve(auth as ProviderAuth), {} as Provider);
 }
 
+async function createOpenAIAuthHooks(): Promise<OpenAIAuthHooks> {
+  const plugin = await WebsearchOpenAIAuthPlugin({} as PluginInput);
+  return plugin;
+}
+
+async function invokeOpenAIAuthLoader(plugin: OpenAIAuthHooks, auth: ProviderAuth) {
+  if (!plugin.auth?.loader) {
+    return;
+  }
+  await plugin.auth.loader(() => Promise.resolve(auth), {} as Provider);
+}
+
 function createResponse(candidate: CandidateInput): GeminiGenerateContentResponse {
   return {
     candidates: [candidate],
@@ -360,7 +433,7 @@ function createResponse(candidate: CandidateInput): GeminiGenerateContentRespons
 }
 
 function createFetchResponse(
-  body: GeminiGenerateContentResponse,
+  body: unknown,
   init?: Partial<Pick<Response, 'ok' | 'status' | 'statusText'>>
 ): Response {
   return {
@@ -370,6 +443,24 @@ function createFetchResponse(
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body)),
   } as Response;
+}
+
+function createOpenAIResponseBody(text: string): unknown {
+  return {
+    output: [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'output_text',
+            text: {
+              value: text,
+            },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 function createToolContext() {
