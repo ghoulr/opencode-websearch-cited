@@ -37,7 +37,7 @@ Add `opencode-websearch-cited` to your `~/.config/opencode/opencode.json`.
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "...other plugins",
-    "opencode-websearch-cited@1.0.0"
+    "opencode-websearch-cited@1.0.2"
   ]
 }
 ```
@@ -63,7 +63,7 @@ Set a `websearch_cited` model in your OpenCode config (required)
     "openrouter": {
       "options": {
         "websearch_cited": {
-          "model": "z-ai/glm-4.5-air:free"
+          "model": "x-ai/grok-4.1-fast"
         }
       }
     },

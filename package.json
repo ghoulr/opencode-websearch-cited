@@ -1,6 +1,6 @@
 {
   "name": "opencode-websearch-cited",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "An OpenCode plugin that provides LLM-grounded web search with citations.",
   "type": "module",
   "main": "./dist/index.js",
