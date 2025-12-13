@@ -1,17 +1,17 @@
 {
   "name": "opencode-websearch-cited",
-  "version": "0.9.2",
+  "version": "1.0.0",
   "description": "An OpenCode plugin that provides provider-backed web search with citations.",
   "module": "index.ts",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ghoulr/opencode-websearch-gemini"
+    "url": "https://github.com/ghoulr/opencode-websearch-cited"
   },
-  "homepage": "https://github.com/ghoulr/opencode-websearch-gemini#readme",
+  "homepage": "https://github.com/ghoulr/opencode-websearch-cited#readme",
   "bugs": {
-    "url": "https://github.com/ghoulr/opencode-websearch-gemini/issues"
+    "url": "https://github.com/ghoulr/opencode-websearch-cited/issues"
   },
   "keywords": [
     "opencode",

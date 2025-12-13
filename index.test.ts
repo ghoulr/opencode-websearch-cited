@@ -474,6 +474,25 @@ describe('WebsearchCitedPlugin', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('returns invalid auth when OpenRouter websearch is configured but auth is missing', async () => {
+    const { tool } = await createEnv({
+      provider: {
+        openrouter: {
+          options: {
+            websearch_cited: { model: 'openrouter/auto' },
+          },
+        },
+      },
+    } as Config);
+    const context = createToolContext();
+
+    await expectThrowMessage(
+      () => tool.execute({ query: 'openrouter' }, context),
+      'Missing auth for provider "openrouter"'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('uses the OpenAI responses endpoint when configured and auth is present', async () => {
     fetchMock.mockResolvedValueOnce(
       createFetchResponse(createOpenAIResponseBody('Search result body'))
@@ -540,6 +559,61 @@ describe('WebsearchCitedPlugin', () => {
     );
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer test-api-key');
+  });
+
+  it('uses the OpenRouter responses endpoint when configured and auth is present', async () => {
+    fetchMock.mockResolvedValueOnce(
+      createFetchResponse(createOpenRouterResponseBody('Search result body'))
+    );
+
+    const { hooks, tool } = await createEnv({
+      provider: {
+        openrouter: {
+          options: {
+            websearch_cited: { model: 'openrouter/auto' },
+          },
+        },
+      },
+    } as Config);
+
+    await invokeAuthLoader(hooks, 'openrouter', {
+      type: 'api',
+      key: 'test-openrouter-key',
+    });
+
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'openrouter web search' }, context);
+
+    expect(result).toContain('Search result body');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof url === 'string' ? url : '').toContain(
+      'https://openrouter.ai/api/v1/responses'
+    );
+
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer test-openrouter-key');
+
+    const bodyText = typeof init?.body === 'string' ? init.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.model).toBe('openrouter/auto');
+    expect(parsed.store).toBe(false);
+    expect(parsed.stream).toBe(false);
+
+    const plugins = parsed.plugins;
+    expect(Array.isArray(plugins)).toBe(true);
+    const plugin0 =
+      Array.isArray(plugins) && plugins[0] && typeof plugins[0] === 'object'
+        ? (plugins[0] as Record<string, unknown>)
+        : undefined;
+    expect(plugin0?.id).toBe('web');
+
+    const searchPromptValue = plugin0?.search_prompt;
+    expect(typeof searchPromptValue === 'string' ? searchPromptValue : '').toContain(
+      'perform web search on "openrouter web search"'
+    );
   });
 
   it('selects the first configured provider in order', async () => {
@@ -767,6 +841,12 @@ function createOpenAIResponseBody(text: string): unknown {
         ],
       },
     ],
+  };
+}
+
+function createOpenRouterResponseBody(text: string): unknown {
+  return {
+    output_text: text,
   };
 }
 

@@ -1,4 +1,4 @@
-LLM-backed web search plugin for [OpenCode](https://opencode.ai), with inline citations and a `Sources:` list when available.
+LLM-grounded web search plugin for [OpenCode](https://opencode.ai), with inline citations and a `Sources:` list when available.
 
 This plugin exposes a web search capability as an OpenCode custom tool, so your agent can call a single tool to perform web search with inline citations.
 
@@ -6,13 +6,16 @@ This plugin exposes a web search capability as an OpenCode custom tool, so your 
 
 ## Features
 
-- `websearch_cited` tool backed by the builtin web search tool from Google/OpenAI/OpenRouter.
+- `websearch_cited` tool backed by the builtin web search tool from:
+  - [Google](https://ai.google.dev/gemini-api/docs/google-search)
+  - [OpenAI](https://platform.openai.com/docs/guides/tools-web-search)
+  - [OpenRouter](https://openrouter.ai/docs/guides/features/plugins/web-search)
 - Outputs results with inline citations and a `Sources:` list when available.
 
 Example output (short):
 
 ```markdown
-Example answer with citations. [1][2]
+Answer with citations[1] based on web search results[2].
 
 Sources:
 [1] Example Source (https://example.test/source-1)
@@ -32,7 +35,10 @@ Add `opencode-websearch-cited` to your `~/.config/opencode/opencode.json`.
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["...other plugins", "opencode-websearch-cited@1.0.0"]
+  "plugin": [
+    "...other plugins",
+    "opencode-websearch-cited@1.0.0"
+  ]
 }
 ```
 
@@ -45,14 +51,22 @@ As long as the plugin is enabled and the provider auth is configured, any OpenCo
 ## Configure web search
 
 Log in with `opencode auth login` first.
+
 This plugin is compatible with [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth.git) and [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth)
 
-Set a `websearch_cited` model in your OpenCode config (required). If you use `opencode.json` (strict JSON), do not use trailing commas.
+Set a `websearch_cited` model in your OpenCode config (required)
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
+    "openrouter": {
+      "options": {
+        "websearch_cited": {
+          "model": "z-ai/glm-4.5-air:free"
+        }
+      }
+    },
     "openai": {
       "options": {
         "websearch_cited": {
@@ -71,7 +85,8 @@ Set a `websearch_cited` model in your OpenCode config (required). If you use `op
 }
 ```
 
-Provider selection rule: the plugin scans `provider` entries in order and uses the first provider that contains `options.websearch_cited.model`. To select a provider, put it first.
+If you specify multiple `websearch_cited.models` fields in your `opencode.json`, the plugin scans `provider` entries in order and uses the first provider that contains `options.websearch_cited.model`. **The order matters**.
+
 If auth or model config is missing, `websearch_cited` throws an error and OpenCode will display the message.
 
 ---

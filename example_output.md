@@ -58,11 +58,11 @@ These examples show that in practical terms, an “OpenCode plugin” is any mod
 
 ---
 
-Sources
-[1] https://opencode.ai/docs/plugins/
-[2] https://thdxr.dev.opencode.ai/docs/plugins/
-[3] https://github.com/opencode-ai/opencode
-[4] https://cupcake.eqtylab.io/reference/harnesses/opencode/
-[5] https://cupcake.eqtylab.io/getting-started/usage/opencode/
-[6] https://opencode.ai/docs/ecosystem/
+Sources:<br>
+[1] https://opencode.ai/docs/plugins/<br>
+[2] https://thdxr.dev.opencode.ai/docs/plugins/<br>
+[3] https://github.com/opencode-ai/opencode<br>
+[4] https://cupcake.eqtylab.io/reference/harnesses/opencode/<br>
+[5] https://cupcake.eqtylab.io/getting-started/usage/opencode/<br>
+[6] https://opencode.ai/docs/ecosystem/<br>
 [7] https://github.com/numman-ali/opencode-openai-codex-auth

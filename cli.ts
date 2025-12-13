@@ -234,15 +234,6 @@ async function initHooks(input: PluginInput): Promise<Hooks[]> {
   return hooks;
 }
 
-function findAuthHook(hooks: Hooks[], providerID: string): Hooks | undefined {
-  for (const hook of hooks) {
-    if (hook.auth?.provider === providerID) {
-      return hook;
-    }
-  }
-  return undefined;
-}
-
 function findTool(hooks: Hooks[], name: string): Tool | undefined {
   let found: unknown;
   for (const hook of hooks) {
@@ -283,16 +274,39 @@ async function main() {
 
   const provider = {} as SdkProvider;
 
-  const googleGetAuth = (() =>
-    loadProviderAuth(authPath, 'google')) as unknown as () => Promise<ProviderAuth>;
-  const openaiGetAuth = (() =>
-    loadProviderAuth(authPath, 'openai')) as unknown as () => Promise<ProviderAuth>;
+  const authCache = new Map<string, ProviderAuth>();
 
-  const googleAuthHook = findAuthHook(hooks, 'google');
-  const openaiAuthHook = findAuthHook(hooks, 'openai');
+  for (const hook of hooks) {
+    const authHook = hook.auth;
+    if (!authHook?.loader) {
+      continue;
+    }
 
-  await googleAuthHook?.auth?.loader?.(googleGetAuth, provider);
-  await openaiAuthHook?.auth?.loader?.(openaiGetAuth, provider);
+    const providerID = authHook.provider;
+    const auth = await loadProviderAuth(authPath, providerID);
+    if (!auth) {
+      continue;
+    }
+
+    authCache.set(providerID, auth);
+
+    const getAuth = (async () => {
+      const cached = authCache.get(providerID);
+      if (cached) {
+        return cached;
+      }
+
+      const fresh = await loadProviderAuth(authPath, providerID);
+      if (!fresh) {
+        throw new Error(`Missing auth for provider "${providerID}"`);
+      }
+
+      authCache.set(providerID, fresh);
+      return fresh;
+    }) as unknown as () => Promise<ProviderAuth>;
+
+    await authHook.loader(getAuth, provider);
+  }
 
   for (const hook of hooks) {
     await hook.config?.(config);

@@ -3,10 +3,12 @@ import type { Config } from '@opencode-ai/sdk';
 
 import { createGoogleWebsearchClient } from '@/google';
 import { createOpenAIWebsearchClient, type OpenAIWebsearchConfig } from '@/openai';
+import { createOpenRouterWebsearchClient } from '@/openrouter';
 import { type GetAuth } from '@/types';
 
 const GOOGLE_PROVIDER_ID = 'google';
 const OPENAI_PROVIDER_ID = 'openai';
+const OPENROUTER_PROVIDER_ID = 'openrouter';
 
 const CITED_SEARCH_TOOL_DESCRIPTION =
   'Performs a web search and returns results with inline citations and a Sources list when available.';
@@ -21,7 +23,10 @@ const WEBSEARCH_ALLOWED_KEYS_DESCRIPTION = Array.from(WEBSEARCH_ALLOWED_KEYS)
   .map((key) => `'${key}'`)
   .join(', ');
 
-type SelectedProviderID = typeof GOOGLE_PROVIDER_ID | typeof OPENAI_PROVIDER_ID;
+type SelectedProviderID =
+  | typeof GOOGLE_PROVIDER_ID
+  | typeof OPENAI_PROVIDER_ID
+  | typeof OPENROUTER_PROVIDER_ID;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -81,7 +86,11 @@ function findFirstWebsearchCitedConfig(config: Config): WebsearchCitedSelection 
       continue;
     }
 
-    if (providerID !== GOOGLE_PROVIDER_ID && providerID !== OPENAI_PROVIDER_ID) {
+    if (
+      providerID !== GOOGLE_PROVIDER_ID &&
+      providerID !== OPENAI_PROVIDER_ID &&
+      providerID !== OPENROUTER_PROVIDER_ID
+    ) {
       firstError ??= `Unsupported provider "${providerID}" for websearch_cited.`;
       continue;
     }
@@ -170,6 +179,19 @@ const WebsearchCitedPlugin: Plugin = () => {
   let configError: string | undefined;
 
   return Promise.resolve({
+    auth: {
+      provider: OPENROUTER_PROVIDER_ID,
+      loader(getAuth) {
+        registerGetAuth(OPENROUTER_PROVIDER_ID, getAuth);
+        return Promise.resolve({});
+      },
+      methods: [
+        {
+          type: 'api',
+          label: 'OpenRouter API key',
+        },
+      ],
+    },
     config: (config) => {
       const { selected, error } = findFirstWebsearchCitedConfig(config);
 
@@ -226,6 +248,18 @@ const WebsearchCitedPlugin: Plugin = () => {
             }
 
             const client = createOpenAIWebsearchClient(selectedModel, openaiConfig);
+            return client.search(query, context.abort, getAuth);
+          }
+
+          if (selectedProvider === OPENROUTER_PROVIDER_ID) {
+            const getAuth = resolveGetAuth(OPENROUTER_PROVIDER_ID);
+            if (!getAuth) {
+              throw new Error(
+                'Missing auth for provider "openrouter". Authenticate via `opencode auth login`.'
+              );
+            }
+
+            const client = createOpenRouterWebsearchClient(selectedModel);
             return client.search(query, context.abort, getAuth);
           }
 
