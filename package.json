@@ -1,9 +1,17 @@
 {
   "name": "opencode-websearch-cited",
-  "version": "1.0.0",
-  "description": "An OpenCode plugin that provides provider-backed web search with citations.",
-  "module": "index.ts",
+  "version": "1.0.1",
+  "description": "An OpenCode plugin that provides LLM-grounded web search with citations.",
   "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -21,8 +29,8 @@
     "agent"
   ],
   "files": [
-    "index.ts",
-    "src",
+    "dist",
+    "index.d.ts",
     "README.md",
     "LICENSE"
   ],
@@ -39,11 +47,13 @@
     "typescript": "^5"
   },
   "scripts": {
-    "prepare": "husky",
+    "prepare": "bunx husky",
     "lint": "bun eslint .",
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run lint && bun run typecheck",
-    "test:agent": "AGENT=1 bun test index.test.ts"
+    "test:agent": "AGENT=1 bun test index.test.ts",
+    "build": "bun build index.ts --outdir dist --target node --format esm --sourcemap --external @opencode-ai/plugin --external @opencode-ai/sdk",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.0.150"
