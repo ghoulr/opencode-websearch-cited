@@ -352,7 +352,7 @@ describe('WebsearchCitedPlugin', () => {
       type: 'oauth',
       access: 'test-access-token',
       refresh: 'test-refresh|user-project|managed-project',
-      expires: Date.now() + 60_000,
+      expires: Date.now() + 120_000,
     });
     const context = createToolContext();
 
@@ -394,8 +394,8 @@ describe('WebsearchCitedPlugin', () => {
     await invokeAuthLoader(hooks, 'google', {
       type: 'oauth',
       access: 'test-access-token',
-      refresh: 'refresh-token|user-project|managed-project',
-      expires: Date.now() + 60_000,
+      refresh: 'refresh-token-project|user-project|managed-project',
+      expires: Date.now() + 120_000,
     });
     const context = createToolContext();
 
@@ -423,8 +423,8 @@ describe('WebsearchCitedPlugin', () => {
     await invokeAuthLoader(hooks, 'google', {
       type: 'oauth',
       access: 'test-access-token',
-      refresh: 'refresh-token||managed-project',
-      expires: Date.now() + 60_000,
+      refresh: 'refresh-token-managed||managed-project',
+      expires: Date.now() + 120_000,
     });
     const context = createToolContext();
 
@@ -436,23 +436,306 @@ describe('WebsearchCitedPlugin', () => {
     expect(parsed.project).toBe('managed-project');
   });
 
-  it('rejects Google OAuth when project metadata is missing', async () => {
+  it('falls back to loadCodeAssist when project metadata is missing', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse({ cloudaicompanionProject: 'load-project' })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: {
+              role: 'model',
+              parts: [{ text: 'Fallback project response' }],
+            },
+          }),
+        })
+      );
+
     const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
     await invokeAuthLoader(hooks, 'google', {
       type: 'oauth',
       access: 'test-access-token',
-      refresh: 'refresh-token',
-      expires: Date.now() + 60_000,
+      refresh: 'refresh-token-load',
+      expires: Date.now() + 120_000,
     });
 
     const context = createToolContext();
 
-    await expectThrowMessage(
-      () => tool.execute({ query: 'oauth query' }, context),
-      'Google Gemini requires a Google Cloud project'
-    );
+    const result = await tool.execute({ query: 'oauth query' }, context);
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toContain('Fallback project response');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [loadUrl, loadInit] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof loadUrl === 'string' ? loadUrl : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+    );
+    const loadHeaders = (loadInit?.headers ?? {}) as Record<string, string>;
+    expect(loadHeaders.Authorization).toBe('Bearer test-access-token');
+
+    const [url, init] = fetchMock.mock.calls[1] ?? [];
+    expect(typeof url === 'string' ? url : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:generateContent'
+    );
+    const bodyText = typeof init?.body === 'string' ? init.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.project).toBe('load-project');
+  });
+
+  it('refreshes token when loadCodeAssist returns 401/403', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse(
+          { error: { message: 'Unauthorized' } },
+          { ok: false, status: 401, statusText: 'Unauthorized' }
+        )
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({ access_token: 'new-access', expires_in: 3600 })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({ cloudaicompanionProject: 'load-project' })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: {
+              role: 'model',
+              parts: [{ text: 'Load retry response' }],
+            },
+          }),
+        })
+      );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'stale-access',
+      refresh: 'refresh-token-load-retry',
+      expires: Number.NaN,
+    });
+
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(result).toContain('Load retry response');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    const [loadUrl, loadInit] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof loadUrl === 'string' ? loadUrl : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+    );
+    const loadHeaders = (loadInit?.headers ?? {}) as Record<string, string>;
+    expect(loadHeaders.Authorization).toBe('Bearer stale-access');
+
+    const [tokenUrl, tokenInit] = fetchMock.mock.calls[1] ?? [];
+    expect(typeof tokenUrl === 'string' ? tokenUrl : '').toContain(
+      'https://oauth2.googleapis.com/token'
+    );
+    const tokenBodyValue = tokenInit?.body;
+    const tokenBody =
+      tokenBodyValue instanceof URLSearchParams
+        ? tokenBodyValue
+        : new URLSearchParams(tokenBodyValue as string);
+    expect(tokenBody.get('refresh_token')).toBe('refresh-token-load-retry');
+
+    const [retryUrl, retryInit] = fetchMock.mock.calls[2] ?? [];
+    expect(typeof retryUrl === 'string' ? retryUrl : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
+    );
+    const retryHeaders = (retryInit?.headers ?? {}) as Record<string, string>;
+    expect(retryHeaders.Authorization).toBe('Bearer new-access');
+
+    const [generateUrl, generateInit] = fetchMock.mock.calls[3] ?? [];
+    expect(typeof generateUrl === 'string' ? generateUrl : '').toContain(
+      'https://cloudcode-pa.googleapis.com/v1internal:generateContent'
+    );
+    const generateHeaders = (generateInit?.headers ?? {}) as Record<string, string>;
+    expect(generateHeaders.Authorization).toBe('Bearer new-access');
+    const bodyText = typeof generateInit?.body === 'string' ? generateInit.body : '';
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(parsed.project).toBe('load-project');
+  });
+
+  it('refreshes expired OAuth access token and uses it', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse({ access_token: 'new-access', expires_in: 3600 })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: { role: 'model', parts: [{ text: 'Refreshed response' }] },
+          }),
+        })
+      );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'stale-access',
+      refresh: 'refresh-token-expired|project-id|',
+      expires: Date.now() - 1,
+    });
+
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(result).toContain('Refreshed response');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [tokenUrl, tokenInit] = fetchMock.mock.calls[0] ?? [];
+    expect(typeof tokenUrl === 'string' ? tokenUrl : '').toContain(
+      'https://oauth2.googleapis.com/token'
+    );
+    const tokenBodyValue = tokenInit?.body;
+    const tokenBody =
+      tokenBodyValue instanceof URLSearchParams
+        ? tokenBodyValue
+        : new URLSearchParams(tokenBodyValue as string);
+    expect(tokenBody.get('refresh_token')).toBe('refresh-token-expired');
+
+    const [, generateInit] = fetchMock.mock.calls[1] ?? [];
+    const headers = (generateInit?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer new-access');
+  });
+
+  it('falls back to the other flavor when refresh fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse(
+          { error: { message: 'invalid_client' } },
+          { ok: false, status: 400, statusText: 'Bad Request' }
+        )
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({ access_token: 'flavor-access', expires_in: 3600 })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: { role: 'model', parts: [{ text: 'Flavor fallback response' }] },
+          }),
+        })
+      );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: '',
+      refresh: 'refresh-token-flavor|project-id|',
+      expires: Date.now() + 120_000,
+    });
+
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(result).toContain('Flavor fallback response');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 2; i += 1) {
+      const callUrl = fetchMock.mock.calls[i]?.[0];
+      expect(typeof callUrl === 'string' ? callUrl : '').toContain(
+        'https://oauth2.googleapis.com/token'
+      );
+    }
+    const [, generateInit] = fetchMock.mock.calls[2] ?? [];
+    const headers = (generateInit?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer flavor-access');
+  });
+
+  it('does not pre-refresh when expires missing; retries once on 401/403', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse(
+          { error: { message: 'Unauthorized' } },
+          { ok: false, status: 401, statusText: 'Unauthorized' }
+        )
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({ access_token: 'new-access', expires_in: 3600 })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: { role: 'model', parts: [{ text: 'Retried response' }] },
+          }),
+        })
+      );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'stale-access',
+      refresh: 'refresh-token-retry|project-id|',
+      expires: Number.NaN,
+    });
+
+    const context = createToolContext();
+
+    const result = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(result).toContain('Retried response');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const firstHeaders = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<
+      string,
+      string
+    >;
+    expect(firstHeaders.Authorization).toBe('Bearer stale-access');
+    const retryHeaders = (fetchMock.mock.calls[2]?.[1]?.headers ?? {}) as Record<
+      string,
+      string
+    >;
+    expect(retryHeaders.Authorization).toBe('Bearer new-access');
+  });
+
+  it('reuses cached refreshed token within same module instance', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        createFetchResponse({ access_token: 'cached-access', expires_in: 3600 })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: { role: 'model', parts: [{ text: 'First call' }] },
+          }),
+        })
+      )
+      .mockResolvedValueOnce(
+        createFetchResponse({
+          response: createResponse({
+            content: { role: 'model', parts: [{ text: 'Second call' }] },
+          }),
+        })
+      );
+
+    const { hooks, tool } = await createEnv(WEBSEARCH_CONFIG);
+    await invokeAuthLoader(hooks, 'google', {
+      type: 'oauth',
+      access: 'expired-access',
+      refresh: 'refresh-token-cache|project-id|',
+      expires: Date.now() - 1,
+    });
+
+    const context = createToolContext();
+
+    const first = await tool.execute({ query: 'oauth query' }, context);
+    const second = await tool.execute({ query: 'oauth query' }, context);
+
+    expect(first).toContain('First call');
+    expect(second).toContain('Second call');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const generateHeaders = (fetchMock.mock.calls[1]?.[1]?.headers ?? {}) as Record<
+      string,
+      string
+    >;
+    const secondHeaders = (fetchMock.mock.calls[2]?.[1]?.headers ?? {}) as Record<
+      string,
+      string
+    >;
+    expect(generateHeaders.Authorization).toBe('Bearer cached-access');
+    expect(secondHeaders.Authorization).toBe('Bearer cached-access');
   });
 
   it('returns invalid auth when OpenAI websearch is configured but auth is missing', async () => {

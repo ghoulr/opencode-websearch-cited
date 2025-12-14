@@ -56,18 +56,32 @@ type GeminiWebSearchOptions = {
   abortSignal: AbortSignal;
 };
 
-type GeminiClientConfig =
-  | {
-      mode: 'api';
-      apiKey: string;
-      model: string;
-    }
-  | {
-      mode: 'oauth';
-      accessToken: string;
-      model: string;
-      projectId: string;
-    };
+type GeminiClientConfig = {
+  mode: 'api';
+  apiKey: string;
+  model: string;
+};
+
+type OAuthAuthDetails = {
+  type: 'oauth';
+  access?: string;
+  refresh?: string;
+  expires?: unknown;
+};
+
+type RefreshParts = {
+  refreshToken: string;
+  projectId?: string;
+  managedProjectId?: string;
+};
+
+type TokenFlavor = 'gemini-cli' | 'antigravity';
+
+type RefreshedToken = {
+  accessToken: string;
+  expiresAt: number;
+  flavor: TokenFlavor;
+};
 
 interface WebSearchClient {
   search(query: string, abortSignal: AbortSignal): Promise<string>;
@@ -76,6 +90,17 @@ interface WebSearchClient {
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const GEMINI_CODE_ASSIST_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
 const GEMINI_CODE_ASSIST_GENERATE_PATH = '/v1internal:generateContent';
+const GEMINI_CODE_ASSIST_LOAD_PATH = '/v1internal:loadCodeAssist';
+const OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+
+const GEMINI_CLIENT_ID =
+  '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
+const GEMINI_CLIENT_SECRET = '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';
+const ANTIGRAVITY_CLIENT_ID =
+  '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
+const ANTIGRAVITY_CLIENT_SECRET = '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';
+
+const REFRESH_BUFFER_MS = 60_000;
 
 const CODE_ASSIST_HEADERS = {
   'User-Agent': 'google-api-nodejs-client/9.15.1',
@@ -83,6 +108,10 @@ const CODE_ASSIST_HEADERS = {
   'Client-Metadata':
     'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
 } as const;
+
+const tokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
+const flavorCache = new Map<string, TokenFlavor>();
+const projectCache = new Map<string, string>();
 
 function buildGeminiUrl(model: string): string {
   const encoded = encodeURIComponent(model);
@@ -270,84 +299,389 @@ class GeminiApiKeyClient implements WebSearchClient {
   }
 }
 
-class GeminiOAuthClient implements WebSearchClient {
-  private readonly accessToken: string;
-  private readonly model: string;
-  private readonly projectId: string;
+function parseRefresh(refresh: string): RefreshParts {
+  const normalized = refresh.trim();
+  if (!normalized) {
+    return { refreshToken: '' };
+  }
+  const [token, project, managed] = normalized.split('|');
+  const refreshToken = token?.trim() ?? '';
+  const projectId = project?.trim() ?? '';
+  const managedProjectId = managed?.trim() ?? '';
+  return {
+    refreshToken,
+    projectId: projectId || undefined,
+    managedProjectId: managedProjectId || undefined,
+  };
+}
 
-  constructor(accessToken: string, model: string, projectId: string) {
-    const normalizedToken = accessToken.trim();
-    const normalizedModel = model.trim();
-    const normalizedProject = projectId.trim();
-    if (!normalizedToken || !normalizedModel || !normalizedProject) {
-      throw new Error('Invalid Google OAuth configuration');
-    }
-    this.accessToken = normalizedToken;
-    this.model = normalizedModel;
-    this.projectId = normalizedProject;
+function getFlavorOrder(preferred?: TokenFlavor): TokenFlavor[] {
+  const base: TokenFlavor[] = ['antigravity', 'gemini-cli'];
+  if (!preferred) {
+    return base;
+  }
+  return [preferred, ...base.filter((flavor) => flavor !== preferred)];
+}
+
+function getCachedAccess(
+  refreshToken: string
+): { accessToken: string; expiresAt: number } | undefined {
+  const cached = tokenCache.get(refreshToken);
+  if (!cached) {
+    return undefined;
+  }
+  if (cached.expiresAt <= Date.now() + REFRESH_BUFFER_MS) {
+    tokenCache.delete(refreshToken);
+    return undefined;
+  }
+  return cached;
+}
+
+function cacheToken(
+  refreshToken: string,
+  accessToken: string,
+  expiresAt?: number
+): void {
+  if (!refreshToken || !accessToken) {
+    return;
+  }
+  if (typeof expiresAt === 'number' && Number.isFinite(expiresAt)) {
+    tokenCache.set(refreshToken, { accessToken, expiresAt });
+  }
+}
+
+async function requestToken(
+  refreshToken: string,
+  flavor: TokenFlavor
+): Promise<RefreshedToken> {
+  const clientId = flavor === 'gemini-cli' ? GEMINI_CLIENT_ID : ANTIGRAVITY_CLIENT_ID;
+  const clientSecret =
+    flavor === 'gemini-cli' ? GEMINI_CLIENT_SECRET : ANTIGRAVITY_CLIENT_SECRET;
+
+  const response = await fetch(OAUTH_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    throw new Error(message ?? `Request failed with status ${response.status}`);
   }
 
-  async search(query: string, abortSignal: AbortSignal): Promise<string> {
-    const normalizedQuery = query.trim();
-    const url = `${GEMINI_CODE_ASSIST_ENDPOINT}${GEMINI_CODE_ASSIST_GENERATE_PATH}`;
+  const payload = (await response.json()) as {
+    access_token?: string;
+    expires_in?: number;
+  };
+  if (!payload.access_token) {
+    throw new Error('Token refresh response missing access_token');
+  }
+  const expiresIn = payload.expires_in;
+  const expiresMs =
+    typeof expiresIn === 'number' && Number.isFinite(expiresIn) ? expiresIn * 1000 : 0;
 
-    const requestPayload: Record<string, unknown> = {
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: normalizedQuery }],
-        },
-      ],
-      tools: [{ googleSearch: {} }],
-    };
+  return {
+    accessToken: payload.access_token,
+    expiresAt: Date.now() + expiresMs,
+    flavor,
+  };
+}
 
-    const body: Record<string, unknown> = {
-      project: this.projectId,
-      model: this.model,
-      request: requestPayload,
-    };
+async function refreshAccessToken(
+  refreshToken: string,
+  preferredFlavor?: TokenFlavor
+): Promise<RefreshedToken> {
+  const order = getFlavorOrder(preferredFlavor);
+  const errors: string[] = [];
 
-    const headers: Record<string, string> = {
+  for (const flavor of order) {
+    try {
+      const result = await requestToken(refreshToken, flavor);
+      flavorCache.set(refreshToken, flavor);
+      cacheToken(refreshToken, result.accessToken, result.expiresAt);
+      return result;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const message =
+    errors.length > 0 ? errors.join('; ') : 'Failed to refresh access token';
+  throw new Error(message);
+}
+
+async function requestLoadCodeAssistProjectId(
+  accessToken: string,
+  abortSignal: AbortSignal
+): Promise<
+  { ok: true; projectId?: string } | { ok: false; status: number; message?: string }
+> {
+  const url = `${GEMINI_CODE_ASSIST_ENDPOINT}${GEMINI_CODE_ASSIST_LOAD_PATH}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       'User-Agent': CODE_ASSIST_HEADERS['User-Agent'],
       'X-Goog-Api-Client': CODE_ASSIST_HEADERS['X-Goog-Api-Client'],
       'Client-Metadata': CODE_ASSIST_HEADERS['Client-Metadata'],
-    };
+    },
+    body: JSON.stringify({
+      metadata: {
+        ideType: 'IDE_UNSPECIFIED',
+        platform: 'PLATFORM_UNSPECIFIED',
+        pluginType: 'GEMINI',
+      },
+    }),
+    signal: abortSignal,
+  });
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: abortSignal,
-    });
-
-    if (!response.ok) {
-      const message = await readErrorMessage(response);
-      throw new Error(message ?? `Request failed with status ${response.status}`);
-    }
-
-    const text = await response.text();
-    if (!text) {
-      throw new Error('Empty response from Google Code Assist');
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text) as unknown;
-    } catch {
-      throw new Error('Invalid JSON response from Google Code Assist');
-    }
-
-    const effectiveResponse = extractGenerateContentResponse(parsed);
-    if (!effectiveResponse) {
-      throw new Error(
-        'Google Code Assist response did not include a valid response payload'
-      );
-    }
-
-    return formatWebSearchResponse(effectiveResponse, normalizedQuery);
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    return { ok: false, status: response.status, message };
   }
+
+  const payload = (await response.json()) as {
+    cloudaicompanionProject?: string | { id?: unknown };
+  };
+
+  const project = payload.cloudaicompanionProject;
+  if (typeof project === 'string' && project.trim() !== '') {
+    return { ok: true, projectId: project };
+  }
+
+  if (project && typeof project === 'object') {
+    const id = (project as Record<string, unknown>).id;
+    if (typeof id === 'string' && id.trim() !== '') {
+      return { ok: true, projectId: id };
+    }
+  }
+
+  return { ok: true };
+}
+
+function parseExpires(expires: unknown): number | undefined {
+  if (typeof expires === 'number' && Number.isFinite(expires)) {
+    return expires;
+  }
+  return undefined;
+}
+
+async function requestGenerateContent(
+  accessToken: string,
+  projectId: string,
+  model: string,
+  query: string,
+  abortSignal: AbortSignal
+): Promise<
+  | { ok: true; body: GeminiGenerateContentResponse }
+  | { ok: false; status: number; message?: string }
+> {
+  const url = `${GEMINI_CODE_ASSIST_ENDPOINT}${GEMINI_CODE_ASSIST_GENERATE_PATH}`;
+
+  const requestPayload: Record<string, unknown> = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: query }],
+      },
+    ],
+    tools: [{ googleSearch: {} }],
+  };
+
+  const body: Record<string, unknown> = {
+    project: projectId,
+    model,
+    request: requestPayload,
+  };
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+    'User-Agent': CODE_ASSIST_HEADERS['User-Agent'],
+    'X-Goog-Api-Client': CODE_ASSIST_HEADERS['X-Goog-Api-Client'],
+    'Client-Metadata': CODE_ASSIST_HEADERS['Client-Metadata'],
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: abortSignal,
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response);
+    return { ok: false, status: response.status, message };
+  }
+
+  const text = await response.text();
+  if (!text) {
+    throw new Error('Empty response from Google Code Assist');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error('Invalid JSON response from Google Code Assist');
+  }
+
+  const effectiveResponse = extractGenerateContentResponse(parsed);
+  if (!effectiveResponse) {
+    throw new Error(
+      'Google Code Assist response did not include a valid response payload'
+    );
+  }
+
+  return { ok: true, body: effectiveResponse };
+}
+
+function createGeminiOAuthWebSearchClient(
+  authDetails: OAuthAuthDetails,
+  model: string
+): WebSearchClient {
+  const refreshParts = parseRefresh(authDetails.refresh ?? '');
+  const refreshToken = refreshParts.refreshToken;
+  if (!refreshToken) {
+    throw new Error('Missing Google OAuth refresh token');
+  }
+
+  const initialAccess = authDetails.access?.trim() ?? '';
+  const initialExpires = parseExpires(authDetails.expires);
+
+  return {
+    async search(query: string, abortSignal: AbortSignal): Promise<string> {
+      const normalizedQuery = query.trim();
+      const preferredFlavor = flavorCache.get(refreshToken);
+
+      const cached = getCachedAccess(refreshToken);
+      let accessToken = cached?.accessToken ?? initialAccess;
+      let expiresAt = cached?.expiresAt ?? initialExpires;
+
+      const shouldRefreshNow =
+        !accessToken ||
+        (typeof expiresAt === 'number' && expiresAt <= Date.now() + REFRESH_BUFFER_MS);
+
+      let refreshedThisRequest = false;
+
+      if (shouldRefreshNow) {
+        const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
+        accessToken = refreshed.accessToken;
+        expiresAt = refreshed.expiresAt;
+        refreshedThisRequest = true;
+      }
+
+      if (!accessToken) {
+        throw new Error('Missing Google OAuth access token');
+      }
+
+      if (typeof expiresAt === 'number') {
+        cacheToken(refreshToken, accessToken, expiresAt);
+      }
+
+      let effectiveProjectId =
+        refreshParts.projectId ??
+        refreshParts.managedProjectId ??
+        projectCache.get(refreshToken);
+
+      if (!effectiveProjectId) {
+        const setProjectId = (projectId?: string) => {
+          if (!projectId) {
+            return;
+          }
+          projectCache.set(refreshToken, projectId);
+          effectiveProjectId = projectId;
+        };
+
+        const load = await requestLoadCodeAssistProjectId(accessToken, abortSignal);
+        if (load.ok) {
+          setProjectId(load.projectId);
+        } else {
+          const shouldRetryLoad =
+            (load.status === 401 || load.status === 403) && !refreshedThisRequest;
+
+          if (!shouldRetryLoad) {
+            throw new Error(
+              load.message ?? `Request failed with status ${load.status}`
+            );
+          }
+
+          tokenCache.delete(refreshToken);
+          const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
+          accessToken = refreshed.accessToken;
+          expiresAt = refreshed.expiresAt;
+          refreshedThisRequest = true;
+          cacheToken(refreshToken, accessToken, expiresAt);
+
+          const retry = await requestLoadCodeAssistProjectId(accessToken, abortSignal);
+          if (retry.ok) {
+            setProjectId(retry.projectId);
+          } else {
+            throw new Error(
+              retry.message ?? `Request failed with status ${retry.status}`
+            );
+          }
+        }
+      }
+
+      if (!effectiveProjectId) {
+        throw new Error(
+          'Google Gemini requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.'
+        );
+      }
+
+      const firstAttempt = await requestGenerateContent(
+        accessToken,
+        effectiveProjectId,
+        model,
+        normalizedQuery,
+        abortSignal
+      );
+
+      if (firstAttempt.ok) {
+        return formatWebSearchResponse(firstAttempt.body, normalizedQuery);
+      }
+
+      const shouldRetry =
+        (firstAttempt.status === 401 || firstAttempt.status === 403) &&
+        !refreshedThisRequest;
+
+      if (!shouldRetry) {
+        throw new Error(
+          firstAttempt.message ?? `Request failed with status ${firstAttempt.status}`
+        );
+      }
+
+      tokenCache.delete(refreshToken);
+      const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
+      accessToken = refreshed.accessToken;
+      expiresAt = refreshed.expiresAt;
+      refreshedThisRequest = true;
+      cacheToken(refreshToken, accessToken, expiresAt);
+
+      const retry = await requestGenerateContent(
+        accessToken,
+        effectiveProjectId,
+        model,
+        normalizedQuery,
+        abortSignal
+      );
+
+      if (retry.ok) {
+        return formatWebSearchResponse(retry.body, normalizedQuery);
+      }
+
+      throw new Error(retry.message ?? `Request failed with status ${retry.status}`);
+    },
+  };
 }
 
 function extractGenerateContentResponse(
@@ -390,28 +724,16 @@ function extractGenerateContentResponse(
 
 async function readErrorMessage(response: Response): Promise<string | undefined> {
   try {
-    const errorBody = (await response.json()) as {
-      error?: { message?: string };
-    };
-    if (errorBody.error?.message && typeof errorBody.error.message === 'string') {
-      return errorBody.error.message;
-    }
-  } catch {}
-
-  try {
-    const fallbackText = await response.text();
-    return fallbackText || undefined;
+    const text = await response.text();
+    const trimmed = text.trim();
+    return trimmed === '' ? undefined : trimmed;
   } catch {
     return undefined;
   }
 }
 
 function createGeminiWebSearchClient(config: GeminiClientConfig): WebSearchClient {
-  if (config.mode === 'api') {
-    return new GeminiApiKeyClient(config.apiKey, config.model);
-  }
-
-  return new GeminiOAuthClient(config.accessToken, config.model, config.projectId);
+  return new GeminiApiKeyClient(config.apiKey, config.model);
 }
 
 function createWebSearchClientForGoogle(
@@ -431,38 +753,8 @@ function createWebSearchClientForGoogle(
   }
 
   if (authDetails.type === 'oauth') {
-    const oauthAuth = authDetails as {
-      type: 'oauth';
-      access?: string;
-      refresh?: string;
-    };
-    const accessToken = oauthAuth.access?.trim() ?? '';
-    if (!accessToken) {
-      throw new Error('Missing Google OAuth access token');
-    }
-
-    const refreshValue = oauthAuth.refresh?.trim() ?? '';
-    const parts = refreshValue.split('|');
-    const projectIdRaw = parts.length >= 2 ? (parts[1] ?? '') : '';
-    const managedProjectIdRaw = parts.length >= 3 ? (parts[2] ?? '') : '';
-
-    const projectId = projectIdRaw.trim() !== '' ? projectIdRaw.trim() : undefined;
-    const managedProjectId =
-      managedProjectIdRaw.trim() !== '' ? managedProjectIdRaw.trim() : undefined;
-
-    const effectiveProjectId = projectId ?? managedProjectId;
-    if (!effectiveProjectId) {
-      throw new Error(
-        'Google Gemini requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.'
-      );
-    }
-
-    return createGeminiWebSearchClient({
-      mode: 'oauth',
-      accessToken,
-      model,
-      projectId: effectiveProjectId,
-    });
+    const oauthAuth = authDetails as OAuthAuthDetails;
+    return createGeminiOAuthWebSearchClient(oauthAuth, model);
   }
 
   throw new Error('Unsupported auth type for Google web search');

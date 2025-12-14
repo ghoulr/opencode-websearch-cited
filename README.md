@@ -37,7 +37,7 @@ Add `opencode-websearch-cited` to your `~/.config/opencode/opencode.json`.
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "...other plugins",
-    "opencode-websearch-cited@1.0.2"
+    "opencode-websearch-cited@1.1.0"
   ]
 }
 ```
