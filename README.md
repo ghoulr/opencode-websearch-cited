@@ -52,7 +52,10 @@ As long as the plugin is enabled and the provider auth is configured, any OpenCo
 
 Log in with `opencode auth login` first.
 
-This plugin is compatible with [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth.git) and [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth)
+This plugin is compatible with:
+- [opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth.git)
+- [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth)
+- [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth.git)
 
 Set a `websearch_cited` model in your OpenCode config (required)
 
