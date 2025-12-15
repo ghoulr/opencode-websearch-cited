@@ -11,10 +11,10 @@ const OPENAI_PROVIDER_ID = 'openai';
 const OPENROUTER_PROVIDER_ID = 'openrouter';
 
 const CITED_SEARCH_TOOL_DESCRIPTION =
-  'Performs a web search and returns results with inline citations and a Sources list when available.';
+  'Performs a Gemini-style grounded web search: returns a concise digest with inline citations and a Sources list of URLs.';
 
 const WEBSEARCH_ARGS = {
-  query: tool.schema.string().describe('The natural-language web search query.'),
+  query: tool.schema.string().describe('The natural language web search query.'),
 } as const;
 
 const WEBSEARCH_ALLOWED_KEYS = new Set(Object.keys(WEBSEARCH_ARGS));
