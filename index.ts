@@ -1,17 +1,20 @@
 import { type Plugin, tool } from '@opencode-ai/plugin';
 import type { Config } from '@opencode-ai/sdk';
 
-import { createGoogleWebsearchClient } from '@/google';
-import { createOpenAIWebsearchClient, type OpenAIWebsearchConfig } from '@/openai';
-import { createOpenRouterWebsearchClient } from '@/openrouter';
-import { type GetAuth } from '@/types';
+import { createGoogleWebsearchClient } from './src/google.ts';
+import {
+  createOpenAIWebsearchClient,
+  type OpenAIWebsearchConfig,
+} from './src/openai.ts';
+import { createOpenRouterWebsearchClient } from './src/openrouter.ts';
+import { type GetAuth } from './src/types.ts';
 
 const GOOGLE_PROVIDER_ID = 'google';
 const OPENAI_PROVIDER_ID = 'openai';
 const OPENROUTER_PROVIDER_ID = 'openrouter';
 
 const CITED_SEARCH_TOOL_DESCRIPTION =
-  'Performs a Gemini-style grounded web search: returns a concise digest with inline citations and a Sources list of URLs. NOTE: for LLM rate limits, DO NOT parallel this tool >3';
+  'Performs a Gemini-style grounded web search: returns a concise digest with inline citations and a Sources list of URLs. NOTE: for LLM rate limits, DO NOT parallel this tool > 5';
 
 const WEBSEARCH_ARGS = {
   query: tool.schema.string().describe('The natural language web search query.'),

@@ -51,7 +51,7 @@
     "lint": "bun eslint .",
     "typecheck": "bunx tsc --noEmit",
     "check": "bun run lint && bun run typecheck",
-    "test:agent": "AGENT=1 bun test index.test.ts",
+    "test:agent": "AGENT=1 bun test --bail",
     "build": "bun build index.ts --outdir dist --target node --format esm --sourcemap --external @opencode-ai/plugin --external @opencode-ai/sdk",
     "prepack": "bun run build"
   },

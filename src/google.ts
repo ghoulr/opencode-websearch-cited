@@ -75,12 +75,9 @@ type RefreshParts = {
   managedProjectId?: string;
 };
 
-type TokenFlavor = 'gemini-cli' | 'antigravity';
-
 type RefreshedToken = {
   accessToken: string;
   expiresAt: number;
-  flavor: TokenFlavor;
 };
 
 interface WebSearchClient {
@@ -88,14 +85,25 @@ interface WebSearchClient {
 }
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const GEMINI_CODE_ASSIST_ENDPOINT = 'https://cloudcode-pa.googleapis.com';
+const ANTIGRAVITY_ENDPOINT_DAILY = 'https://daily-cloudcode-pa.sandbox.googleapis.com';
+const ANTIGRAVITY_ENDPOINT_AUTOPUSH =
+  'https://autopush-cloudcode-pa.sandbox.googleapis.com';
+const ANTIGRAVITY_ENDPOINT_PROD = 'https://cloudcode-pa.googleapis.com';
 const GEMINI_CODE_ASSIST_GENERATE_PATH = '/v1internal:generateContent';
 const GEMINI_CODE_ASSIST_LOAD_PATH = '/v1internal:loadCodeAssist';
+const CODE_ASSIST_GENERATE_ENDPOINTS = [
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+  ANTIGRAVITY_ENDPOINT_PROD,
+] as const;
+const CODE_ASSIST_LOAD_ENDPOINTS = [
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+] as const;
+const ANTIGRAVITY_DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
 const OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
-const GEMINI_CLIENT_ID =
-  '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-const GEMINI_CLIENT_SECRET = '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';
 const ANTIGRAVITY_CLIENT_ID =
   '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const ANTIGRAVITY_CLIENT_SECRET = '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';
@@ -103,14 +111,13 @@ const ANTIGRAVITY_CLIENT_SECRET = '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';
 const REFRESH_BUFFER_MS = 60_000;
 
 const CODE_ASSIST_HEADERS = {
-  'User-Agent': 'google-api-nodejs-client/9.15.1',
-  'X-Goog-Api-Client': 'gl-node/22.17.0',
+  'User-Agent': 'antigravity/1.11.5 windows/amd64',
+  'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
   'Client-Metadata':
-    'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
+    '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}',
 } as const;
 
 const tokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
-const flavorCache = new Map<string, TokenFlavor>();
 const projectCache = new Map<string, string>();
 
 function buildGeminiUrl(model: string): string {
@@ -315,14 +322,6 @@ function parseRefresh(refresh: string): RefreshParts {
   };
 }
 
-function getFlavorOrder(preferred?: TokenFlavor): TokenFlavor[] {
-  const base: TokenFlavor[] = ['antigravity', 'gemini-cli'];
-  if (!preferred) {
-    return base;
-  }
-  return [preferred, ...base.filter((flavor) => flavor !== preferred)];
-}
-
 function getCachedAccess(
   refreshToken: string
 ): { accessToken: string; expiresAt: number } | undefined {
@@ -350,14 +349,8 @@ function cacheToken(
   }
 }
 
-async function requestToken(
-  refreshToken: string,
-  flavor: TokenFlavor
-): Promise<RefreshedToken> {
-  const clientId = flavor === 'gemini-cli' ? GEMINI_CLIENT_ID : ANTIGRAVITY_CLIENT_ID;
-  const clientSecret =
-    flavor === 'gemini-cli' ? GEMINI_CLIENT_SECRET : ANTIGRAVITY_CLIENT_SECRET;
-
+async function requestToken(refreshToken: string): Promise<RefreshedToken> {
+  const requestTime = Date.now();
   const response = await fetch(OAUTH_TOKEN_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -366,8 +359,8 @@ async function requestToken(
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: ANTIGRAVITY_CLIENT_ID,
+      client_secret: ANTIGRAVITY_CLIENT_SECRET,
     }),
   });
 
@@ -383,88 +376,136 @@ async function requestToken(
   if (!payload.access_token) {
     throw new Error('Token refresh response missing access_token');
   }
-  const expiresIn = payload.expires_in;
-  const expiresMs =
-    typeof expiresIn === 'number' && Number.isFinite(expiresIn) ? expiresIn * 1000 : 0;
+  const expiresIn =
+    typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)
+      ? payload.expires_in
+      : 3600;
+  const expiresAt = expiresIn > 0 ? requestTime + expiresIn * 1000 : requestTime;
 
   return {
     accessToken: payload.access_token,
-    expiresAt: Date.now() + expiresMs,
-    flavor,
+    expiresAt,
   };
 }
 
-async function refreshAccessToken(
-  refreshToken: string,
-  preferredFlavor?: TokenFlavor
-): Promise<RefreshedToken> {
-  const order = getFlavorOrder(preferredFlavor);
-  const errors: string[] = [];
+async function refreshAccessToken(refreshToken: string): Promise<RefreshedToken> {
+  const result = await requestToken(refreshToken);
+  cacheToken(refreshToken, result.accessToken, result.expiresAt);
+  return result;
+}
 
-  for (const flavor of order) {
+type LoadCodeAssistPayload = {
+  cloudaicompanionProject?: string | { id?: string };
+};
+
+function buildMetadata(projectId?: string): Record<string, string> {
+  const metadata: Record<string, string> = {
+    ideType: 'IDE_UNSPECIFIED',
+    platform: 'PLATFORM_UNSPECIFIED',
+    pluginType: 'GEMINI',
+  };
+  if (projectId) {
+    metadata.duetProject = projectId;
+  }
+  return metadata;
+}
+
+async function loadManagedProject(
+  accessToken: string,
+  projectId: string | undefined,
+  abortSignal: AbortSignal
+): Promise<LoadCodeAssistPayload | null> {
+  const loadHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+    'User-Agent': 'google-api-nodejs-client/9.15.1',
+    'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
+    'Client-Metadata': CODE_ASSIST_HEADERS['Client-Metadata'],
+  };
+
+  const requestBody = {
+    metadata: buildMetadata(projectId),
+  };
+
+  const loadEndpoints = Array.from(
+    new Set<string>([...CODE_ASSIST_LOAD_ENDPOINTS, ...CODE_ASSIST_GENERATE_ENDPOINTS])
+  );
+
+  for (const baseEndpoint of loadEndpoints) {
     try {
-      const result = await requestToken(refreshToken, flavor);
-      flavorCache.set(refreshToken, flavor);
-      cacheToken(refreshToken, result.accessToken, result.expiresAt);
-      return result;
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+      const response = await fetch(`${baseEndpoint}${GEMINI_CODE_ASSIST_LOAD_PATH}`, {
+        method: 'POST',
+        headers: loadHeaders,
+        body: JSON.stringify(requestBody),
+        signal: abortSignal,
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      return (await response.json()) as LoadCodeAssistPayload;
+    } catch {
+      continue;
     }
   }
 
-  const message =
-    errors.length > 0 ? errors.join('; ') : 'Failed to refresh access token';
-  throw new Error(message);
+  return null;
 }
 
-async function requestLoadCodeAssistProjectId(
-  accessToken: string,
-  abortSignal: AbortSignal
-): Promise<
-  { ok: true; projectId?: string } | { ok: false; status: number; message?: string }
-> {
-  const url = `${GEMINI_CODE_ASSIST_ENDPOINT}${GEMINI_CODE_ASSIST_LOAD_PATH}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      'User-Agent': CODE_ASSIST_HEADERS['User-Agent'],
-      'X-Goog-Api-Client': CODE_ASSIST_HEADERS['X-Goog-Api-Client'],
-      'Client-Metadata': CODE_ASSIST_HEADERS['Client-Metadata'],
-    },
-    body: JSON.stringify({
-      metadata: {
-        ideType: 'IDE_UNSPECIFIED',
-        platform: 'PLATFORM_UNSPECIFIED',
-        pluginType: 'GEMINI',
-      },
-    }),
-    signal: abortSignal,
-  });
-
-  if (!response.ok) {
-    const message = await readErrorMessage(response);
-    return { ok: false, status: response.status, message };
+function extractManagedProjectId(
+  payload?: LoadCodeAssistPayload | null
+): string | undefined {
+  if (!payload) {
+    return undefined;
   }
-
-  const payload = (await response.json()) as {
-    cloudaicompanionProject?: string | { id?: unknown };
-  };
-
   const project = payload.cloudaicompanionProject;
   if (typeof project === 'string' && project.trim() !== '') {
-    return { ok: true, projectId: project };
+    return project;
   }
-
-  if (project && typeof project === 'object') {
-    const id = (project as Record<string, unknown>).id;
+  if (project && typeof project === 'object' && project.id) {
+    const id = project.id;
     if (typeof id === 'string' && id.trim() !== '') {
-      return { ok: true, projectId: id };
+      return id;
     }
   }
+  return undefined;
+}
 
-  return { ok: true };
+async function resolveProjectId(
+  accessToken: string,
+  refreshToken: string,
+  refreshParts: RefreshParts,
+  abortSignal: AbortSignal
+): Promise<string> {
+  if (refreshParts.managedProjectId) {
+    return refreshParts.managedProjectId;
+  }
+
+  const cached = projectCache.get(refreshToken);
+  if (cached) {
+    return cached;
+  }
+
+  const fallbackProjectId = ANTIGRAVITY_DEFAULT_PROJECT_ID;
+  const desiredProjectId = refreshParts.projectId ?? fallbackProjectId;
+  const loadPayload = await loadManagedProject(
+    accessToken,
+    desiredProjectId,
+    abortSignal
+  );
+  const resolvedManagedProjectId = extractManagedProjectId(loadPayload);
+
+  if (resolvedManagedProjectId) {
+    projectCache.set(refreshToken, resolvedManagedProjectId);
+    return resolvedManagedProjectId;
+  }
+
+  if (refreshParts.projectId) {
+    return refreshParts.projectId;
+  }
+
+  return fallbackProjectId;
 }
 
 function parseExpires(expires: unknown): number | undefined {
@@ -472,6 +513,13 @@ function parseExpires(expires: unknown): number | undefined {
     return expires;
   }
   return undefined;
+}
+
+function accessTokenExpired(accessToken: string, expiresAt?: number): boolean {
+  if (!accessToken || typeof expiresAt !== 'number') {
+    return true;
+  }
+  return expiresAt <= Date.now() + REFRESH_BUFFER_MS;
 }
 
 async function requestGenerateContent(
@@ -484,8 +532,6 @@ async function requestGenerateContent(
   | { ok: true; body: GeminiGenerateContentResponse }
   | { ok: false; status: number; message?: string }
 > {
-  const url = `${GEMINI_CODE_ASSIST_ENDPOINT}${GEMINI_CODE_ASSIST_GENERATE_PATH}`;
-
   const requestPayload: Record<string, unknown> = {
     contents: [
       {
@@ -496,11 +542,14 @@ async function requestGenerateContent(
     tools: [{ googleSearch: {} }],
   };
 
-  const body: Record<string, unknown> = {
+  const body = JSON.stringify({
     project: projectId,
     model,
     request: requestPayload,
-  };
+    requestType: 'agent',
+    userAgent: 'antigravity',
+    requestId: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+  });
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -510,38 +559,56 @@ async function requestGenerateContent(
     'Client-Metadata': CODE_ASSIST_HEADERS['Client-Metadata'],
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  });
+  let lastError: { status: number; message?: string } | undefined;
 
-  if (!response.ok) {
-    const message = await readErrorMessage(response);
-    return { ok: false, status: response.status, message };
+  for (const baseUrl of CODE_ASSIST_GENERATE_ENDPOINTS) {
+    const response = await fetch(`${baseUrl}${GEMINI_CODE_ASSIST_GENERATE_PATH}`, {
+      method: 'POST',
+      headers,
+      body,
+      signal: abortSignal,
+    });
+
+    if (!response.ok) {
+      const message = await readErrorMessage(response);
+      if (response.status === 401 || response.status === 403) {
+        return { ok: false, status: response.status, message };
+      }
+      lastError = { status: response.status, message };
+      continue;
+    }
+
+    const text = await response.text();
+    if (!text) {
+      throw new Error('Empty response from Google Code Assist');
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      throw new Error('Invalid JSON response from Google Code Assist');
+    }
+
+    const effectiveResponse = extractGenerateContentResponse(parsed);
+    if (!effectiveResponse) {
+      throw new Error(
+        'Google Code Assist response did not include a valid response payload'
+      );
+    }
+
+    return { ok: true, body: effectiveResponse };
   }
 
-  const text = await response.text();
-  if (!text) {
-    throw new Error('Empty response from Google Code Assist');
+  if (lastError) {
+    return { ok: false, status: lastError.status, message: lastError.message };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw new Error('Invalid JSON response from Google Code Assist');
-  }
-
-  const effectiveResponse = extractGenerateContentResponse(parsed);
-  if (!effectiveResponse) {
-    throw new Error(
-      'Google Code Assist response did not include a valid response payload'
-    );
-  }
-
-  return { ok: true, body: effectiveResponse };
+  return {
+    ok: false,
+    status: 502,
+    message: 'Request failed for all Google Code Assist endpoints.',
+  };
 }
 
 function createGeminiOAuthWebSearchClient(
@@ -560,20 +627,14 @@ function createGeminiOAuthWebSearchClient(
   return {
     async search(query: string, abortSignal: AbortSignal): Promise<string> {
       const normalizedQuery = query.trim();
-      const preferredFlavor = flavorCache.get(refreshToken);
 
       const cached = getCachedAccess(refreshToken);
       let accessToken = cached?.accessToken ?? initialAccess;
       let expiresAt = cached?.expiresAt ?? initialExpires;
-
-      const shouldRefreshNow =
-        !accessToken ||
-        (typeof expiresAt === 'number' && expiresAt <= Date.now() + REFRESH_BUFFER_MS);
-
       let refreshedThisRequest = false;
 
-      if (shouldRefreshNow) {
-        const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
+      if (accessTokenExpired(accessToken, expiresAt)) {
+        const refreshed = await refreshAccessToken(refreshToken);
         accessToken = refreshed.accessToken;
         expiresAt = refreshed.expiresAt;
         refreshedThisRequest = true;
@@ -587,56 +648,12 @@ function createGeminiOAuthWebSearchClient(
         cacheToken(refreshToken, accessToken, expiresAt);
       }
 
-      let effectiveProjectId =
-        refreshParts.projectId ??
-        refreshParts.managedProjectId ??
-        projectCache.get(refreshToken);
-
-      if (!effectiveProjectId) {
-        const setProjectId = (projectId?: string) => {
-          if (!projectId) {
-            return;
-          }
-          projectCache.set(refreshToken, projectId);
-          effectiveProjectId = projectId;
-        };
-
-        const load = await requestLoadCodeAssistProjectId(accessToken, abortSignal);
-        if (load.ok) {
-          setProjectId(load.projectId);
-        } else {
-          const shouldRetryLoad =
-            (load.status === 401 || load.status === 403) && !refreshedThisRequest;
-
-          if (!shouldRetryLoad) {
-            throw new Error(
-              load.message ?? `Request failed with status ${load.status}`
-            );
-          }
-
-          tokenCache.delete(refreshToken);
-          const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
-          accessToken = refreshed.accessToken;
-          expiresAt = refreshed.expiresAt;
-          refreshedThisRequest = true;
-          cacheToken(refreshToken, accessToken, expiresAt);
-
-          const retry = await requestLoadCodeAssistProjectId(accessToken, abortSignal);
-          if (retry.ok) {
-            setProjectId(retry.projectId);
-          } else {
-            throw new Error(
-              retry.message ?? `Request failed with status ${retry.status}`
-            );
-          }
-        }
-      }
-
-      if (!effectiveProjectId) {
-        throw new Error(
-          'Google Gemini requires a Google Cloud project. Enable the Gemini for Google Cloud API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.'
-        );
-      }
+      const effectiveProjectId = await resolveProjectId(
+        accessToken,
+        refreshToken,
+        refreshParts,
+        abortSignal
+      );
 
       const firstAttempt = await requestGenerateContent(
         accessToken,
@@ -661,7 +678,7 @@ function createGeminiOAuthWebSearchClient(
       }
 
       tokenCache.delete(refreshToken);
-      const refreshed = await refreshAccessToken(refreshToken, preferredFlavor);
+      const refreshed = await refreshAccessToken(refreshToken);
       accessToken = refreshed.accessToken;
       expiresAt = refreshed.expiresAt;
       refreshedThisRequest = true;
