@@ -39,8 +39,13 @@ function resolveGetAuth(providerID: string): GetAuth | undefined {
 	return authRegistry.get(providerID);
 }
 
+export function _resetAuthRegistryForTesting(): void {
+	authRegistry.clear();
+}
+
 type SelectedWebsearchConfig = {
-	providerID: SelectedProviderID;
+	providerID: string;
+	implementation: SelectedProviderID;
 	model: string;
 };
 
@@ -83,18 +88,39 @@ function findFirstWebsearchCitedConfig(config: Config): WebsearchCitedSelection 
 			continue;
 		}
 
-		if (
-			providerID !== GOOGLE_PROVIDER_ID &&
-			providerID !== OPENAI_PROVIDER_ID &&
-			providerID !== OPENROUTER_PROVIDER_ID
-		) {
-			firstError ??= `Unsupported provider "${providerID}" for websearch_cited.`;
+		let implementation: SelectedProviderID | undefined;
+
+		const providerOverride = cited.providerOverride;
+		if (typeof providerOverride === "string" && providerOverride.trim() !== "") {
+			const normalized = providerOverride.trim();
+			if (
+				normalized === GOOGLE_PROVIDER_ID ||
+				normalized === OPENAI_PROVIDER_ID ||
+				normalized === OPENROUTER_PROVIDER_ID
+			) {
+				implementation = normalized;
+			}
+		}
+
+		if (!implementation) {
+			if (
+				providerID === GOOGLE_PROVIDER_ID ||
+				providerID === OPENAI_PROVIDER_ID ||
+				providerID === OPENROUTER_PROVIDER_ID
+			) {
+				implementation = providerID;
+			}
+		}
+
+		if (!implementation) {
+			firstError ??= `Unsupported provider "${providerID}" for websearch_cited (and no valid override specified).`;
 			continue;
 		}
 
 		return {
 			selected: {
-				providerID: providerID as SelectedProviderID,
+				providerID,
+				implementation,
 				model: candidate.trim(),
 			},
 		};
@@ -165,7 +191,8 @@ function parseOpenAIOptions(providerConfig: unknown, model: string | undefined):
 }
 
 const WebsearchCitedPlugin: Plugin = () => {
-	let selectedProvider: SelectedProviderID | undefined;
+	let selectedAuthProvider: string | undefined;
+	let selectedImplementation: SelectedProviderID | undefined;
 	let selectedModel: string | undefined;
 	let openaiConfig: OpenAIWebsearchConfig = {};
 	let configError: string | undefined;
@@ -187,17 +214,20 @@ const WebsearchCitedPlugin: Plugin = () => {
 		config: (config) => {
 			const { selected, error } = findFirstWebsearchCitedConfig(config);
 
-			selectedProvider = undefined;
+			selectedAuthProvider = undefined;
+			selectedImplementation = undefined;
 			selectedModel = undefined;
 			openaiConfig = {};
 			configError = error;
 
 			if (selected) {
-				selectedProvider = selected.providerID;
+				selectedAuthProvider = selected.providerID;
+				selectedImplementation = selected.implementation;
 				selectedModel = selected.model;
-				if (selectedProvider === OPENAI_PROVIDER_ID) {
-					const openaiProvider = config.provider?.openai;
-					openaiConfig = parseOpenAIOptions(openaiProvider, selectedModel);
+
+				if (selectedImplementation === OPENAI_PROVIDER_ID) {
+					const providerConfig = config.provider?.[selectedAuthProvider];
+					openaiConfig = parseOpenAIOptions(providerConfig, selectedModel);
 				}
 			}
 
@@ -225,33 +255,25 @@ const WebsearchCitedPlugin: Plugin = () => {
 						throw new Error(configError);
 					}
 
-					if (!selectedProvider || !selectedModel) {
+					if (!selectedAuthProvider || !selectedImplementation || !selectedModel) {
 						throw new Error("Missing web search model configuration.");
 					}
 
-					if (selectedProvider === OPENAI_PROVIDER_ID) {
-						const getAuth = resolveGetAuth(OPENAI_PROVIDER_ID);
-						if (!getAuth) {
-							throw new Error('Missing auth for provider "openai". Authenticate via `opencode auth login`.');
-						}
+					const getAuth = resolveGetAuth(selectedAuthProvider);
+					if (!getAuth) {
+						throw new Error(
+							`Missing auth for provider "${selectedAuthProvider}". Authenticate via \`opencode auth login\`.`
+						);
+					}
 
+					if (selectedImplementation === OPENAI_PROVIDER_ID) {
 						const client = createOpenAIWebsearchClient(selectedModel, openaiConfig);
 						return client.search(query, context.abort, getAuth);
 					}
 
-					if (selectedProvider === OPENROUTER_PROVIDER_ID) {
-						const getAuth = resolveGetAuth(OPENROUTER_PROVIDER_ID);
-						if (!getAuth) {
-							throw new Error('Missing auth for provider "openrouter". Authenticate via `opencode auth login`.');
-						}
-
+					if (selectedImplementation === OPENROUTER_PROVIDER_ID) {
 						const client = createOpenRouterWebsearchClient(selectedModel);
 						return client.search(query, context.abort, getAuth);
-					}
-
-					const getAuth = resolveGetAuth(GOOGLE_PROVIDER_ID);
-					if (!getAuth) {
-						throw new Error('Missing auth for provider "google". Authenticate via `opencode auth login`.');
 					}
 
 					const client = createGoogleWebsearchClient(selectedModel);

@@ -3,6 +3,7 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Config, Provider, Auth as ProviderAuth } from "@opencode-ai/sdk";
 
 import { formatWebSearchResponse } from "./src/google.ts";
+import * as WebsearchPluginModule from "./index.ts";
 
 const WEBSEARCH_CONFIG: Config = {
 	provider: {
@@ -15,8 +16,6 @@ const WEBSEARCH_CONFIG: Config = {
 		},
 	},
 };
-
-let importCounter = 0;
 
 type WebSearchGenerateContentResponse = Parameters<typeof formatWebSearchResponse>[0];
 
@@ -131,7 +130,12 @@ describe("WebsearchCitedPlugin", () => {
 
 	beforeEach(() => {
 		fetchMock = vi.spyOn(globalThis, "fetch");
-		fetchMock.mockRejectedValue(new Error("fetch mock not configured"));
+		fetchMock.mockImplementation(() => Promise.reject(new Error("fetch mock not configured")));
+
+		// Reset registry before each test
+		if (typeof (WebsearchPluginModule as any)._resetAuthRegistryForTesting === "function") {
+			(WebsearchPluginModule as any)._resetAuthRegistryForTesting();
+		}
 	});
 
 	afterEach(() => {
@@ -799,21 +803,112 @@ describe("WebsearchCitedPlugin", () => {
 		expect(typeof url === "string" ? url : "").toContain("/codex/responses");
 	});
 
+	it("supports custom provider with provider override", async () => {
+		const { tool } = await createEnv({
+			provider: {
+				proxy: {
+					options: {
+						websearch_cited: {
+							providerOverride: "google",
+							model: "gemini-2.5-flash",
+						},
+					},
+				},
+			},
+		} as Config);
+		const context = createToolContext();
+
+		// Should try to use "proxy" auth, which is not registered, so it should fail with missing auth for "proxy"
+		// This proves it accepted the config and tried to use "proxy" as auth provider
+		await expectThrowMessage(
+			() => tool.execute({ query: "opencode" }, context),
+			'Missing auth for provider "proxy"'
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("supports custom provider with openai implementation override", async () => {
+		const { tool } = await createEnv({
+			provider: {
+				my_openai: {
+					options: {
+						websearch_cited: {
+							providerOverride: "openai",
+							model: "gpt-4o",
+						},
+					},
+				},
+			},
+		} as Config);
+		const context = createToolContext();
+
+		await expectThrowMessage(
+			() => tool.execute({ query: "opencode" }, context),
+			'Missing auth for provider "my_openai"'
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects custom provider without override", async () => {
+		const { tool } = await createEnv({
+			provider: {
+				proxy: {
+					options: {
+						websearch_cited: {
+							model: "gemini-2.5-flash",
+						},
+					},
+				},
+			},
+		} as Config);
+		const context = createToolContext();
+
+		await expectThrowMessage(
+			() => tool.execute({ query: "opencode" }, context),
+			'Unsupported provider "proxy" for websearch_cited'
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects invalid provider override", async () => {
+		const { tool } = await createEnv({
+			provider: {
+				proxy: {
+					options: {
+						websearch_cited: {
+							providerOverride: "invalid_impl",
+							model: "gemini-2.5-flash",
+						},
+					},
+				},
+			},
+		} as Config);
+		const context = createToolContext();
+
+		await expectThrowMessage(
+			() => tool.execute({ query: "opencode" }, context),
+			'Unsupported provider "proxy" for websearch_cited (and no valid override specified)'
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("index exports are valid plugin init functions", async () => {
-		const mod = await importIndexModule();
+		const mod = WebsearchPluginModule;
 		const entries = Object.entries(mod);
 		expect(entries.length).toBeGreaterThan(0);
 		for (const [name, value] of entries) {
+			if (name === "_resetAuthRegistryForTesting") continue;
 			expect(name.trim()).not.toBe("");
 			expect(typeof value).toBe("function");
 		}
 	});
 
 	it("initializes all exports like opencode", async () => {
-		const mod = await importIndexModule();
+		const mod = WebsearchPluginModule;
 		const input = createPluginInput();
 		const hooks: unknown[] = [];
 		for (const [name, value] of Object.entries(mod)) {
+			if (name === "_resetAuthRegistryForTesting") continue;
 			if (typeof value !== "function") {
 				throw new Error(`Invalid plugin export "${name}"`);
 			}
@@ -855,25 +950,21 @@ function createPluginInput(): PluginInput {
 	return {} as PluginInput;
 }
 
-async function importIndexModule(): Promise<Record<string, unknown>> {
-	importCounter += 1;
-	const mod = (await import(`./index?agent_test=${importCounter}`)) as unknown;
-	if (!mod || typeof mod !== "object") {
-		throw new Error("Invalid plugin module");
-	}
-	return mod as Record<string, unknown>;
-}
-
 async function createEnv(config?: Config): Promise<{ hooks: Hooks[]; tool: Tool }> {
-	const mod = await importIndexModule();
+	const mod = WebsearchPluginModule;
 	const input = createPluginInput();
 	const hooks: Hooks[] = [];
 
 	for (const [name, value] of Object.entries(mod)) {
-		if (typeof value !== "function") {
-			throw new Error(`Invalid plugin export "${name}"`);
+		if (name === "_resetAuthRegistryForTesting" || name === "default") {
+			if (name === "default" && typeof value === "function") {
+				hooks.push(await (value as Plugin)(input));
+			}
+			continue;
 		}
-		hooks.push(await (value as Plugin)(input));
+		if (typeof value === "function") {
+			hooks.push(await (value as Plugin)(input));
+		}
 	}
 
 	if (config) {

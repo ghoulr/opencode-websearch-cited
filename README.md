@@ -87,6 +87,29 @@ Set a `websearch_cited` model in your OpenCode config (required)
 }
 ```
 
+### Using a proxy provider
+
+If you use a proxy provider (e.g. `proxy` in your `opencode.json`), you can manually specify the compatible web search provider implementation using the `providerOverride` option.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "proxy": {
+      "options": {
+        "websearch_cited": {
+          "providerOverride": "google",
+          "model": "gemini-2.5-flash"
+        }
+      }
+    }
+  }
+}
+```
+
+Supported values for `providerOverride` are: `google`, `openai`, `openrouter`.
+```
+
 If you specify multiple `websearch_cited.models` fields in your `opencode.json`, the plugin scans `provider` entries in order and uses the first provider that contains `options.websearch_cited.model`. **The order matters**.
 
 If auth or model config is missing, `websearch_cited` throws an error and OpenCode will display the message.
