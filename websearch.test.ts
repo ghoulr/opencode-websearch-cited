@@ -764,6 +764,80 @@ describe("WebsearchCitedPlugin", () => {
 		);
 	});
 
+	it("reads OpenAI streamed output items when the completed event has no output", async () => {
+		fetchMock.mockResolvedValueOnce(createRawFetchResponse(createOpenAIStreamedSse("Streamed result body")));
+
+		const { hooks, tool } = await createEnv({
+			provider: {
+				openai: {
+					options: {
+						websearch_cited: { model: "gpt-4o-search-preview" },
+					},
+				},
+			},
+		} as Config);
+
+		await invokeAuthLoader(hooks, "openai", {
+			type: "oauth",
+			access: "test-access-token",
+			refresh: "test-refresh-token",
+			expires: Date.now() + 60_000,
+		});
+
+		const context = createToolContext();
+
+		const result = await tool.execute({ query: "openai web search" }, context);
+
+		expect(result).toBe("Streamed result body");
+	});
+
+	it("prefers the completed event output over streamed output items", async () => {
+		fetchMock.mockResolvedValueOnce(
+			createRawFetchResponse(
+				createOpenAIStreamedSse("Streamed result body", [createOpenAIMessageItem("Completed result body")])
+			)
+		);
+
+		const { hooks, tool } = await createEnv({
+			provider: {
+				openai: {
+					options: {
+						websearch_cited: { model: "gpt-4o-search-preview" },
+					},
+				},
+			},
+		} as Config);
+		await invokeAuthLoader(hooks, "openai", { type: "api", key: "test-api-key" });
+
+		const result = await tool.execute({ query: "openai web search" }, createToolContext());
+
+		expect(result).toBe("Completed result body");
+	});
+
+	it("throws when the OpenAI stream reports a failure", async () => {
+		fetchMock.mockResolvedValueOnce(
+			createRawFetchResponse(
+				createOpenAISse([{ type: "response.failed", response: { error: { message: "server_error" } } }])
+			)
+		);
+
+		const { hooks, tool } = await createEnv({
+			provider: {
+				openai: {
+					options: {
+						websearch_cited: { model: "gpt-4o-search-preview" },
+					},
+				},
+			},
+		} as Config);
+		await invokeAuthLoader(hooks, "openai", { type: "api", key: "test-api-key" });
+
+		await expectThrowMessage(
+			() => tool.execute({ query: "openai web search" }, createToolContext()),
+			"OpenAI stream failed"
+		);
+	});
+
 	it("selects the first configured provider in order", async () => {
 		fetchMock.mockResolvedValueOnce(createFetchResponse(createOpenAIResponseBody("Search result body")));
 
@@ -985,6 +1059,41 @@ function createOpenRouterResponseBody(text: string): unknown {
 	return {
 		output_text: text,
 	};
+}
+
+function createRawFetchResponse(body: string): Response {
+	return {
+		ok: true,
+		status: 200,
+		statusText: "OK",
+		json: () => Promise.reject(new Error("not json")),
+		text: () => Promise.resolve(body),
+	} as Response;
+}
+
+function createOpenAIMessageItem(text: string): object {
+	return {
+		type: "message",
+		role: "assistant",
+		content: [{ type: "output_text", text }],
+	};
+}
+
+function createOpenAISse(events: object[]): string {
+	return `${events.map((event) => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\ndata: [DONE]\n\n`;
+}
+
+function createOpenAIStreamedSse(streamedText: string, completedOutput: object[] = []): string {
+	return createOpenAISse([
+		{
+			type: "response.output_item.done",
+			item: createOpenAIMessageItem(streamedText),
+		},
+		{
+			type: "response.completed",
+			response: { output: completedOutput },
+		},
+	]);
 }
 
 function createToolContext() {

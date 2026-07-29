@@ -358,8 +358,17 @@ async function buildErrorDetails(response: Response, url: string, body: OpenAIRe
 
 type OpenAISseEvent = {
 	type?: string;
-	response?: object;
+	response?: { output?: unknown };
+	item?: unknown;
 };
+
+function parseOpenAISseEvent(payload: string): OpenAISseEvent | undefined {
+	try {
+		return JSON.parse(payload) as OpenAISseEvent;
+	} catch {
+		return undefined;
+	}
+}
 
 async function readOpenAIResponsePayload(response: Response): Promise<unknown> {
 	const text = await response.text();
@@ -385,6 +394,7 @@ async function readOpenAIResponsePayload(response: Response): Promise<unknown> {
 
 function extractOpenAIResponseFromSse(sseText: string): object | undefined {
 	const lines = sseText.split("\n");
+	const streamedItems: object[] = [];
 
 	for (const line of lines) {
 		if (!line.startsWith("data: ")) {
@@ -394,14 +404,36 @@ function extractOpenAIResponseFromSse(sseText: string): object | undefined {
 		if (!payload || payload === "[DONE]") {
 			continue;
 		}
-		try {
-			const parsed = JSON.parse(payload) as OpenAISseEvent;
-			const kind = parsed.type ?? "";
-			if (kind === "response.done" || kind === "response.completed") {
-				return parsed.response;
+
+		const parsed = parseOpenAISseEvent(payload);
+		if (!parsed) {
+			continue;
+		}
+		const kind = parsed.type ?? "";
+
+		if (kind === "response.failed" || kind === "error") {
+			throw new Error(`OpenAI stream failed | event=${payload}`);
+		}
+
+		if (kind === "response.output_item.done") {
+			if (parsed.item && typeof parsed.item === "object") {
+				streamedItems.push(parsed.item);
 			}
-		} catch {}
+			continue;
+		}
+
+		if (kind === "response.done" || kind === "response.completed") {
+			const response = parsed.response;
+			if (!response) {
+				continue;
+			}
+			const output = response.output;
+			if (Array.isArray(output) && output.length > 0) {
+				return response;
+			}
+			return { ...response, output: streamedItems };
+		}
 	}
 
-	return undefined;
+	return streamedItems.length > 0 ? { output: streamedItems } : undefined;
 }
