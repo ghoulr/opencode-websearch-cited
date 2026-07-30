@@ -7,6 +7,7 @@ This plugin exposes a web search capability as an OpenCode custom tool, so your 
 ## Features
 
 - `websearch_cited` tool backed by the builtin web search tool from:
+  - [Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
   - [Google](https://ai.google.dev/gemini-api/docs/google-search)
   - [OpenAI](https://platform.openai.com/docs/guides/tools-web-search)
   - [OpenRouter](https://openrouter.ai/docs/guides/features/plugins/web-search)
@@ -56,12 +57,23 @@ For google support, this plugin is compatible with:
 - API Key via opencode auth, or
 - [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth.git)
 
+For anthropic support, this plugin is compatible with:
+- API Key via opencode auth, or
+- Claude Pro/Max OAuth credentials stored by opencode auth
+
 Set a `websearch_cited` model in your OpenCode config (required)
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
+    "anthropic": {
+      "options": {
+        "websearch_cited": {
+          "model": "claude-sonnet-4-6"
+        }
+      }
+    },
     "openrouter": {
       "options": {
         "websearch_cited": {

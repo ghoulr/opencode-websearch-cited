@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Config, Provider, Auth as ProviderAuth } from "@opencode-ai/sdk";
 
+import { type AnthropicMessagesResponse, formatAnthropicWebSearchResponse } from "./src/anthropic.ts";
 import { formatWebSearchResponse } from "./src/google.ts";
 
 const WEBSEARCH_CONFIG: Config = {
@@ -14,6 +15,73 @@ const WEBSEARCH_CONFIG: Config = {
 			},
 		},
 	},
+};
+
+const ANTHROPIC_CONFIG: Config = {
+	provider: {
+		anthropic: {
+			options: {
+				websearch_cited: {
+					model: "claude-sonnet-4-6",
+				},
+			},
+		},
+	},
+};
+
+// Captured 2026-07-30 from POST https://api.anthropic.com/v1/messages
+// (web_search_20260318, allowed_callers ["direct"]), trimmed to two results.
+const ANTHROPIC_LIVE_RESPONSE = {
+	stop_reason: "end_turn",
+	content: [
+		{
+			type: "server_tool_use",
+			id: "srvtoolu_014T7BRVj9scndT88zJyibnz",
+			name: "web_search",
+			input: { query: "latest stable version of Bun" },
+		},
+		{
+			type: "web_search_tool_result",
+			tool_use_id: "srvtoolu_014T7BRVj9scndT88zJyibnz",
+			content: [
+				{
+					type: "web_search_result",
+					title: "Upgrade Bun to the latest version - Bun",
+					url: "https://bun.com/docs/guides/util/upgrade",
+					encrypted_content: "EoQDCioIEhgCIiRjMzBlNDcy",
+					page_age: "5 days ago",
+				},
+				{
+					type: "web_search_result",
+					title: "Bun 1.3.14: Latest Bun Version - What Version",
+					url: "https://www.what-version.com/latest-version/bun/",
+					encrypted_content: "EsEICioIEhgCIiRjMzBlNDcy",
+					page_age: "June 23, 2026",
+				},
+			],
+		},
+		{ type: "text", text: "The latest stable version of Bun is " },
+		{
+			type: "text",
+			text: "**Bun v1.3.14**, released on **May 13, 2026**.",
+			citations: [
+				{
+					type: "web_search_result_location",
+					cited_text: "Bun v1.3.14 Latest · Latest · Compare · Filter · Loading · T",
+					url: "https://github.com/oven-sh/bun/releases",
+					title: "Releases · oven-sh/bun",
+					encrypted_index: "Eo8BCioIEhgCIiRjMzBlNDcy",
+				},
+				{
+					type: "web_search_result_location",
+					cited_text: "View all tags · Jarred-Sumner released this · 13 May 03:48 ·",
+					url: "https://github.com/oven-sh/bun/releases",
+					title: "Releases · oven-sh/bun",
+					encrypted_index: "Eo8BCioIEhgCIiRjMzBlNDcz",
+				},
+			],
+		},
+	],
 };
 
 let importCounter = 0;
@@ -122,6 +190,171 @@ describe("formatWebSearchResponse", () => {
 
 		expect(result).toBe(
 			"こんにちは![1] Web Search✨️[2][3]\n\nSources:\n[1] Japanese Greeting (https://example.test/japanese-greeting)\n[2] Example Repo (https://example.test/repo)\n[3] Example Article (https://example.test/article)"
+		);
+	});
+});
+
+describe("formatAnthropicWebSearchResponse", () => {
+	it("returns fallback when response has no content", () => {
+		const result = formatAnthropicWebSearchResponse({ content: [] }, "empty query");
+
+		expect(result).toBe('Web search completed for "empty query", but no results were returned.');
+	});
+
+	it("returns text without sources when no citations are present", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [{ type: "text", text: "Here are your results." }],
+		};
+
+		const result = formatAnthropicWebSearchResponse(response, "plain query");
+
+		expect(result).toBe("Here are your results.");
+	});
+
+	it("appends citation markers and a deduplicated sources list", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{ type: "server_tool_use" },
+				{
+					type: "web_search_tool_result",
+					content: [{ type: "web_search_result", url: "https://example.test/one", title: "One" }],
+				},
+				{
+					type: "text",
+					text: "First fact.",
+					citations: [{ type: "web_search_result_location", url: "https://example.test/one", title: "One" }],
+				},
+				{ type: "text", text: " " },
+				{
+					type: "text",
+					text: "Second fact.",
+					citations: [
+						{ type: "web_search_result_location", url: "https://example.test/two", title: "Two" },
+						{ type: "web_search_result_location", url: "https://example.test/one", title: "One" },
+					],
+				},
+			],
+		};
+
+		const result = formatAnthropicWebSearchResponse(response, "citation query");
+
+		expect(result).toBe(
+			"First fact.[1] Second fact.[1][2]\n\nSources:\n[1] One (https://example.test/one)\n[2] Two (https://example.test/two)"
+		);
+	});
+
+	it("falls back to the url when a citation has no title", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{
+					type: "text",
+					text: "Fact.",
+					citations: [{ type: "web_search_result_location", url: "https://example.test/untitled" }],
+				},
+			],
+		};
+
+		const result = formatAnthropicWebSearchResponse(response, "untitled query");
+
+		expect(result).toBe("Fact.[1]\n\nSources:\n[1] https://example.test/untitled (https://example.test/untitled)");
+	});
+
+	it("throws when the web search tool reports an error", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{
+					type: "web_search_tool_result",
+					content: { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" },
+				},
+			],
+		};
+
+		expect(() => formatAnthropicWebSearchResponse(response, "error query")).toThrow(
+			"Anthropic web search failed: max_uses_exceeded"
+		);
+	});
+
+	it("keeps the answer when a later search reports an error", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{
+					type: "web_search_tool_result",
+					content: [{ type: "web_search_result", url: "https://example.test/one", title: "One" }],
+				},
+				{ type: "text", text: "Partial answer." },
+				{
+					type: "web_search_tool_result",
+					content: { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" },
+				},
+			],
+		};
+
+		expect(formatAnthropicWebSearchResponse(response, "partial query")).toBe("Partial answer.");
+	});
+
+	it("drops the narration emitted before the first search result", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{ type: "text", text: "I'll search the web for that." },
+				{ type: "server_tool_use" },
+				{
+					type: "web_search_tool_result",
+					content: [{ type: "web_search_result", url: "https://example.test/one", title: "One" }],
+				},
+				{ type: "text", text: "The answer." },
+			],
+		};
+
+		expect(formatAnthropicWebSearchResponse(response, "narration query")).toBe("The answer.");
+	});
+
+	it("places the citation marker before trailing whitespace", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{
+					type: "text",
+					text: "Fact.\n",
+					citations: [{ type: "web_search_result_location", url: "https://example.test/one", title: "One" }],
+				},
+			],
+		};
+
+		expect(formatAnthropicWebSearchResponse(response, "whitespace query")).toBe(
+			"Fact.[1]\n\n\nSources:\n[1] One (https://example.test/one)"
+		);
+	});
+
+	it("ignores citations that are not web search locations", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [
+				{ type: "text", text: "Null citations.", citations: null },
+				{
+					type: "text",
+					text: " Other citations.",
+					citations: [{ type: "char_location", url: "https://example.test/doc" }],
+				},
+			],
+		};
+
+		expect(formatAnthropicWebSearchResponse(response, "citation kind query")).toBe("Null citations. Other citations.");
+	});
+
+	it("appends a truncation notice when the response was cut short", () => {
+		const response: AnthropicMessagesResponse = {
+			content: [{ type: "text", text: "Partial answer." }],
+			stop_reason: "max_tokens",
+		};
+
+		expect(formatAnthropicWebSearchResponse(response, "truncated query")).toBe(
+			"Partial answer.\n\n(Response truncated: stop_reason=max_tokens)"
+		);
+	});
+
+	it("formats a captured live response with deduplicated sources", () => {
+		const result = formatAnthropicWebSearchResponse(ANTHROPIC_LIVE_RESPONSE, "latest stable Bun version");
+
+		expect(result).toBe(
+			"The latest stable version of Bun is **Bun v1.3.14**, released on **May 13, 2026**.[1]\n\nSources:\n[1] Releases · oven-sh/bun (https://github.com/oven-sh/bun/releases)"
 		);
 	});
 });
@@ -764,6 +997,95 @@ describe("WebsearchCitedPlugin", () => {
 		);
 	});
 
+	it("returns invalid auth when Anthropic websearch is configured but auth is missing", async () => {
+		const { tool } = await createEnv(ANTHROPIC_CONFIG);
+		const context = createToolContext();
+
+		await expectThrowMessage(
+			() => tool.execute({ query: "anthropic" }, context),
+			'Missing auth for provider "anthropic"'
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("uses the Anthropic messages endpoint with API key auth", async () => {
+		fetchMock.mockResolvedValueOnce(createFetchResponse(createAnthropicResponseBody("Search result body")));
+
+		const { hooks, tool } = await createEnv(ANTHROPIC_CONFIG);
+
+		await invokeAuthLoader(hooks, "anthropic", {
+			type: "api",
+			key: "test-anthropic-key",
+		});
+
+		const context = createToolContext();
+
+		const result = await tool.execute({ query: "anthropic web search" }, context);
+
+		expect(result).toContain("Search result body");
+		expect(result).toContain("Sources:\n[1] Example (https://example.test/anthropic)");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(typeof url === "string" ? url : "").toBe("https://api.anthropic.com/v1/messages");
+
+		const headers = (init?.headers ?? {}) as Record<string, string>;
+		expect(headers["x-api-key"]).toBe("test-anthropic-key");
+		expect(headers["anthropic-version"]).toBe("2023-06-01");
+		expect(headers["anthropic-beta"]).toBeUndefined();
+		expect(headers.Authorization).toBeUndefined();
+
+		const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
+		expect(parsed.model).toBe("claude-sonnet-4-6");
+		expect(parsed.max_tokens).toBe(4096);
+
+		const tools = parsed.tools;
+		const tool0 =
+			Array.isArray(tools) && tools[0] && typeof tools[0] === "object"
+				? (tools[0] as Record<string, unknown>)
+				: undefined;
+		expect(tool0?.type).toBe("web_search_20260318");
+		expect(tool0?.name).toBe("web_search");
+		expect(tool0?.allowed_callers).toEqual(["direct"]);
+
+		const system = parsed.system;
+		expect(Array.isArray(system) ? system.length : 0).toBe(1);
+	});
+
+	it("uses OAuth bearer auth and the Claude Code system block when OAuth auth is present", async () => {
+		fetchMock.mockResolvedValueOnce(createFetchResponse(createAnthropicResponseBody("Search result body")));
+
+		const { hooks, tool } = await createEnv(ANTHROPIC_CONFIG);
+
+		await invokeAuthLoader(hooks, "anthropic", {
+			type: "oauth",
+			access: "test-access-token",
+			refresh: "test-refresh-token",
+			expires: Date.now() + 60_000,
+		});
+
+		const context = createToolContext();
+
+		const result = await tool.execute({ query: "anthropic web search" }, context);
+
+		expect(result).toContain("Search result body");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		const [, init] = fetchMock.mock.calls[0] ?? [];
+		const headers = (init?.headers ?? {}) as Record<string, string>;
+		expect(headers.Authorization).toBe("Bearer test-access-token");
+		expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+		expect(headers["x-api-key"]).toBeUndefined();
+
+		const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
+		const system = parsed.system;
+		const firstBlock =
+			Array.isArray(system) && system[0] && typeof system[0] === "object"
+				? (system[0] as Record<string, unknown>)
+				: undefined;
+		expect(firstBlock?.text).toBe("You are Claude Code, Anthropic's official CLI for Claude.");
+	});
+
 	it("selects the first configured provider in order", async () => {
 		fetchMock.mockResolvedValueOnce(createFetchResponse(createOpenAIResponseBody("Search result body")));
 
@@ -984,6 +1306,22 @@ function createOpenAIResponseBody(text: string): unknown {
 function createOpenRouterResponseBody(text: string): unknown {
 	return {
 		output_text: text,
+	};
+}
+
+function createAnthropicResponseBody(text: string): unknown {
+	return {
+		content: [
+			{
+				type: "web_search_tool_result",
+				content: [{ type: "web_search_result", url: "https://example.test/anthropic", title: "Example" }],
+			},
+			{
+				type: "text",
+				text,
+				citations: [{ type: "web_search_result_location", url: "https://example.test/anthropic", title: "Example" }],
+			},
+		],
 	};
 }
 
